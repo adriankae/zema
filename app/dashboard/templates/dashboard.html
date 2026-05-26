@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Zema Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Zema</p>
+        <h1>Treatment Control Center</h1>
+      </div>
+      <form method="post" action="/dashboard/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="secondary-button" type="submit">Log out</button>
+      </form>
+    </header>
+
+    <main class="page">
+      {% if error %}
+        <p class="form-error">{{ error }}</p>
+      {% endif %}
+      <section class="hero-card {% if overview.all_clear %}hero-clear{% else %}hero-due{% endif %}">
+        <div>
+          <p class="eyebrow">Today</p>
+          {% if overview.all_clear %}
+            <h2>All clear for now</h2>
+            <p>No treatment is due at this moment.</p>
+          {% else %}
+            <h2>{{ overview.due|length }} treatment{% if overview.due|length != 1 %}s{% endif %} due now</h2>
+            <p>Log each completed treatment here, then refresh the overview from the current record.</p>
+          {% endif %}
+        </div>
+        <div class="hero-stats" aria-label="Today summary">
+          <span><strong>{{ overview.due|length }}</strong> due now</span>
+          <span><strong>{{ overview.upcoming|length }}</strong> upcoming</span>
+          <span><strong>{{ overview.active_locations|length }}</strong> active locations</span>
+        </div>
+      </section>
+
+      <section class="section-grid due-grid" aria-labelledby="due-title">
+        <div class="section-heading">
+          <p class="eyebrow">Next Actions</p>
+          <h2 id="due-title">Due Now</h2>
+        </div>
+        {% if overview.due %}
+          {% for item in overview.due %}
+            <article class="card action-card">
+              <div class="location-row">
+                {% if item.image_url %}
+                  <img src="{{ item.image_url }}" alt="" class="location-image">
+                {% else %}
+                  <div class="location-initial">{{ item.location_name[:1] }}</div>
+                {% endif %}
+                <div>
+                  <h3>{{ item.location_name }}</h3>
+                  <p>{{ item.subject_name }} · Phase {{ item.phase_number }}</p>
+                </div>
+              </div>
+              <dl class="compact-metrics">
+                <div>
+                  <dt>Slot</dt>
+                  <dd>{{ item.due_slot or "Today" }}</dd>
+                </div>
+                <div>
+                  <dt>Last</dt>
+                  <dd>{{ item.last_application_at|zdt }}</dd>
+                </div>
+              </dl>
+              <form method="post" action="/dashboard/treatments" class="treatment-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="episode_id" value="{{ item.episode_id }}">
+                <input type="hidden" name="treatment_type" value="steroid">
+                <label>
+                  <span>Treatment</span>
+                  <input name="treatment_name" placeholder="Name">
+                </label>
+                <label>
+                  <span>Amount</span>
+                  <input name="quantity_text" placeholder="Thin layer">
+                </label>
+                <button type="submit">Log treatment</button>
+              </form>
+            </article>
+          {% endfor %}
+        {% else %}
+          <article class="card empty-card">
+            <h3>No treatment is due at this moment</h3>
+            <p>Keep the next scheduled locations visible below so the day still has a clear plan.</p>
+          </article>
+        {% endif %}
+      </section>
+
+      <section class="section-grid" aria-labelledby="upcoming-title">
+        <div class="section-heading">
+          <p class="eyebrow">Plan</p>
+          <h2 id="upcoming-title">Upcoming</h2>
+        </div>
+        <div class="list-card">
+          {% if overview.upcoming %}
+            {% for item in overview.upcoming[:8] %}
+              <article class="list-row">
+                <div>
+                  <h3>{{ item.location_name }}</h3>
+                  <p>{{ item.subject_name }} · Phase {{ item.phase_number }} · {{ item.status.replace("_", " ") }}</p>
+                </div>
+                <div class="row-meta">
+                  <span>Next {{ item.next_due_at|zdt }}</span>
+                  <small>Last {{ item.last_application_at|zdt }}</small>
+                </div>
+              </article>
+            {% endfor %}
+          {% else %}
+            <p class="muted">No active or tapering locations are waiting on a future treatment.</p>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="two-column">
+        <div class="section-grid" aria-labelledby="locations-title">
+          <div class="section-heading">
+            <p class="eyebrow">Coverage</p>
+            <h2 id="locations-title">Active Locations</h2>
+          </div>
+          <div class="card location-cloud">
+            {% if overview.active_locations %}
+              {% for item in overview.active_locations %}
+                <span>{{ item.location_name }} <small>Phase {{ item.phase_number }}</small></span>
+              {% endfor %}
+            {% else %}
+              <p class="muted">No active locations are being tracked.</p>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="section-grid" aria-labelledby="adherence-title">
+          <div class="section-heading">
+            <p class="eyebrow">Rhythm</p>
+            <h2 id="adherence-title">Adherence</h2>
+          </div>
+          <div class="card adherence-card">
+            {% for item in overview.adherence %}
+              <div class="adherence-row">
+                <div>
+                  <h3>{{ item.label }}</h3>
+                  <p>{{ item.from_date|zdate }} to {{ item.to_date|zdate }}</p>
+                </div>
+                <strong>{% if item.score is none %}--{% else %}{{ "%.0f"|format(item.score * 100) }}%{% endif %}</strong>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+
+      <section class="card trust-card" aria-labelledby="trust-title">
+        <div>
+          <p class="eyebrow">System Trust</p>
+          <h2 id="trust-title">Schedule state is current</h2>
+          {% if overview.phase_catch_up %}
+            <p>Last schedule reconciliation ran {{ overview.phase_catch_up.ran_at }} with {{ overview.phase_catch_up.changed_count }} changed episode{% if overview.phase_catch_up.changed_count != 1 %}s{% endif %}.</p>
+          {% else %}
+            <p>The dashboard recalculates treatment timing before rendering this page.</p>
+          {% endif %}
+        </div>
+        <p class="muted">Generated {{ overview.generated_at|zdt }}</p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Zema Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-card" aria-labelledby="login-title">
+        <p class="eyebrow">Zema</p>
+        <h1 id="login-title">Treatment Control Center</h1>
+        {% if error %}
+          <p class="form-error">{{ error }}</p>
+        {% endif %}
+        <form method="post" action="/dashboard/login" class="login-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label>
+            <span>Username</span>
+            <input name="username" autocomplete="username" required>
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit">Sign in</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

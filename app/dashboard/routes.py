@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -22,9 +22,9 @@ from app.dashboard.auth import (
     require_valid_login_csrf,
 )
 from app.dashboard.read_model import build_dashboard_overview
-from app.location_images import get_location_image_file
+from app.location_images import get_location_image_file, store_location_image
 from app.models import Account
-from app.services import authenticate_user, issue_login_token, log_application
+from app.services import authenticate_user, create_location, get_location, get_subject, issue_login_token, log_application
 
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -261,6 +261,90 @@ def dashboard_log_treatment(
         "user",
         f"user:{account.id}",
     )
+    return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+
+
+@router.post("/subjects/{subject_id}")
+def dashboard_update_subject(
+    subject_id: int,
+    request: Request,
+    display_name: str = Form(...),
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    subject = get_subject(db, account, subject_id)
+    cleaned = _clean(display_name)
+    if cleaned is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="display name required")
+    subject.display_name = cleaned
+    db.add(subject)
+    db.commit()
+    return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/locations")
+async def dashboard_create_location(
+    request: Request,
+    code: str = Form(...),
+    display_name: str = Form(...),
+    csrf_token: str | None = Form(default=None),
+    image: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    cleaned_code = _clean(code)
+    cleaned_name = _clean(display_name)
+    if cleaned_code is None or cleaned_name is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="location code and display name required")
+    location = create_location(db, account, cleaned_code, cleaned_name)
+    if image is not None and image.filename:
+        await store_location_image(db, account, location.id, image)
+    return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/locations/{location_id}")
+def dashboard_update_location(
+    location_id: int,
+    request: Request,
+    display_name: str = Form(...),
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    location = get_location(db, account, location_id)
+    cleaned = _clean(display_name)
+    if cleaned is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="display name required")
+    location.display_name = cleaned
+    db.add(location)
+    db.commit()
+    return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/locations/{location_id}/image")
+async def dashboard_update_location_image(
+    location_id: int,
+    request: Request,
+    csrf_token: str | None = Form(default=None),
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    await store_location_image(db, account, location_id, image)
     return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
 
 

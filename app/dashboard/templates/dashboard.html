@@ -188,6 +188,62 @@
         </div>
       </section>
 
+      <section class="management-grid" aria-labelledby="management-title">
+        <div class="section-heading">
+          <p class="eyebrow">Manage</p>
+          <h2 id="management-title">Subjects & Locations</h2>
+        </div>
+
+        <article class="card management-card">
+          <h3>Subjects</h3>
+          {% for subject in overview.subjects %}
+            <form method="post" action="/dashboard/subjects/{{ subject.id }}" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <label>
+                <span>Display name</span>
+                <input name="display_name" value="{{ subject.display_name }}" required>
+              </label>
+              <button class="secondary-button compact-button" type="submit">Save</button>
+            </form>
+          {% endfor %}
+        </article>
+
+        <article class="card management-card">
+          <h3>Add location</h3>
+          <form method="post" action="/dashboard/locations" class="stack-form" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label><span>Code</span><input name="code" placeholder="left_elbow" required></label>
+            <label><span>Display name</span><input name="display_name" placeholder="Left elbow" required></label>
+            <label><span>Image</span><input name="image" type="file" accept="image/png,image/jpeg,image/webp"></label>
+            <button type="submit">Add location</button>
+          </form>
+        </article>
+
+        <article class="card management-card location-management-card">
+          <h3>Locations</h3>
+          {% for location in overview.locations %}
+            <div class="location-edit-row">
+              <form method="post" action="/dashboard/locations/{{ location.id }}" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label>
+                  <span>{{ location.code }}</span>
+                  <input name="display_name" value="{{ location.display_name }}" required>
+                </label>
+                <button class="secondary-button compact-button" type="submit">Save</button>
+              </form>
+              <form method="post" action="/dashboard/locations/{{ location.id }}/image" class="inline-form" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label>
+                  <span>{% if location.image_storage_key %}Replace image{% else %}Upload image{% endif %}</span>
+                  <input name="image" type="file" accept="image/png,image/jpeg,image/webp" required>
+                </label>
+                <button class="secondary-button compact-button" type="submit">Upload</button>
+              </form>
+            </div>
+          {% endfor %}
+        </article>
+      </section>
+
       <section class="card trust-card" aria-labelledby="trust-title">
         <div>
           <p class="eyebrow">System Trust</p>

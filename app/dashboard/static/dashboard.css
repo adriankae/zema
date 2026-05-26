@@ -462,6 +462,43 @@ button {
   padding: 12px 14px;
 }
 
+
+.management-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 22px;
+}
+
+.management-grid .section-heading,
+.location-management-card {
+  grid-column: 1 / -1;
+}
+
+.management-card {
+  display: grid;
+  gap: 14px;
+}
+
+.inline-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.stack-form {
+  display: grid;
+  gap: 12px;
+}
+
+.location-edit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
 @media (max-width: 760px) {
   .topbar,
   .page {
@@ -481,6 +518,12 @@ button {
   .trust-card,
   .list-row {
     align-items: stretch;
+  }
+
+  .management-grid,
+  .location-edit-row,
+  .inline-form {
+    grid-template-columns: 1fr;
   }
 
   .hero-card {

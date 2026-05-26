@@ -5,8 +5,12 @@ from html.parser import HTMLParser
 
 from app.core.database import SessionLocal
 from app.core.time import utc_now
-from app.models import TreatmentApplication
+from app.models import BodyLocation, Subject, TreatmentApplication
 from app.services import create_episode, create_location, create_subject, heal_episode, log_application
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+JPEG_BYTES = b"\xff\xd8\xff" + b"\x00" * 16
 
 
 class _CsrfParser(HTMLParser):
@@ -396,6 +400,133 @@ def test_custom_adherence_range_uses_requested_dates(client, monkeypatch):
     assert "Custom range" in response.text
     assert 'data-date="2026-05-20"' in response.text
     assert 'data-date="2026-05-26"' in response.text
+
+
+def test_dashboard_subject_rename_updates_display_name(client):
+    episode_id = _create_taper_episode(location_code="subject_rename", location_name="Subject rename location")
+    db = SessionLocal()
+    try:
+        episode = db.get(TreatmentApplication, -1)  # keeps import names available for linters
+        del episode
+        from app.models import EczemaEpisode
+
+        created_episode = db.get(EczemaEpisode, episode_id)
+        subject_id = created_episode.subject_id
+    finally:
+        db.close()
+    _login(client)
+    dashboard = client.get("/dashboard")
+    csrf = _csrf_token(dashboard.text)
+
+    response = client.post(
+        f"/dashboard/subjects/{subject_id}",
+        data={"display_name": "Updated subject", "csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.get(Subject, subject_id).display_name == "Updated subject"
+    finally:
+        db.close()
+    updated = client.get("/dashboard")
+    assert "Updated subject" in updated.text
+
+
+def test_dashboard_location_rename_updates_display_name(client):
+    episode_id = _create_taper_episode(location_code="location_rename", location_name="Old location")
+    db = SessionLocal()
+    try:
+        from app.models import EczemaEpisode
+
+        location_id = db.get(EczemaEpisode, episode_id).location_id
+    finally:
+        db.close()
+    _login(client)
+    dashboard = client.get("/dashboard")
+    csrf = _csrf_token(dashboard.text)
+
+    response = client.post(
+        f"/dashboard/locations/{location_id}",
+        data={"display_name": "New location", "csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.get(BodyLocation, location_id).display_name == "New location"
+    finally:
+        db.close()
+    updated = client.get("/dashboard")
+    assert "New location" in updated.text
+    assert "Old location" not in updated.text
+
+
+def test_dashboard_add_location_with_image(client):
+    _login(client)
+    dashboard = client.get("/dashboard")
+    csrf = _csrf_token(dashboard.text)
+
+    response = client.post(
+        "/dashboard/locations",
+        data={"code": "new_cheek", "display_name": "New cheek", "csrf_token": csrf},
+        files={"image": ("cheek.png", PNG_BYTES, "image/png")},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        location = db.query(BodyLocation).filter(BodyLocation.code == "new_cheek").one()
+        assert location.display_name == "New cheek"
+        assert location.image_mime_type == "image/png"
+        assert location.image_storage_key is not None
+    finally:
+        db.close()
+
+
+def test_dashboard_replace_location_image(client):
+    episode_id = _create_taper_episode(location_code="replace_image", location_name="Replace image")
+    db = SessionLocal()
+    try:
+        from app.models import EczemaEpisode
+
+        location_id = db.get(EczemaEpisode, episode_id).location_id
+    finally:
+        db.close()
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard").text)
+    first = client.post(
+        f"/dashboard/locations/{location_id}/image",
+        data={"csrf_token": csrf},
+        files={"image": ("first.png", PNG_BYTES, "image/png")},
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+    db = SessionLocal()
+    try:
+        old_storage_key = db.get(BodyLocation, location_id).image_storage_key
+    finally:
+        db.close()
+
+    csrf = _csrf_token(client.get("/dashboard").text)
+    second = client.post(
+        f"/dashboard/locations/{location_id}/image",
+        data={"csrf_token": csrf},
+        files={"image": ("second.jpg", JPEG_BYTES, "image/jpeg")},
+        follow_redirects=False,
+    )
+
+    assert second.status_code == 303
+    db = SessionLocal()
+    try:
+        location = db.get(BodyLocation, location_id)
+        assert location.image_mime_type == "image/jpeg"
+        assert location.image_storage_key != old_storage_key
+    finally:
+        db.close()
 
 
 def test_dashboard_html_does_not_expose_tokens_or_browser_token_storage(client):

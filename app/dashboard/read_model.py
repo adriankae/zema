@@ -63,6 +63,8 @@ class DashboardOverview:
     due: list[DashboardEpisodeRow]
     upcoming: list[DashboardEpisodeRow]
     active_locations: list[DashboardEpisodeRow]
+    subjects: list[Subject]
+    locations: list[BodyLocation]
     adherence: list[DashboardAdherence]
     adherence_range: DashboardAdherenceRange
     phase_catch_up: dict | None
@@ -98,6 +100,8 @@ def build_dashboard_overview(db: Session, account: Account, *, adherence_range: 
         due=due,
         upcoming=upcoming,
         active_locations=active_locations,
+        subjects=sorted(subjects.values(), key=lambda subject: subject.display_name),
+        locations=sorted(locations.values(), key=lambda location: location.display_name),
         adherence=_adherence_summaries(db, account, selected_adherence_range),
         adherence_range=selected_adherence_range,
         phase_catch_up=get_last_successful_phase_catch_up(),

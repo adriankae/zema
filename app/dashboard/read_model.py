@@ -38,6 +38,14 @@ class DashboardHabitDay:
 
 
 @dataclass(frozen=True)
+class DashboardAdherenceRange:
+    key: str
+    label: str
+    from_date: date
+    to_date: date
+
+
+@dataclass(frozen=True)
 class DashboardAdherence:
     label: str
     from_date: date
@@ -56,6 +64,7 @@ class DashboardOverview:
     upcoming: list[DashboardEpisodeRow]
     active_locations: list[DashboardEpisodeRow]
     adherence: list[DashboardAdherence]
+    adherence_range: DashboardAdherenceRange
     phase_catch_up: dict | None
     generated_at: datetime
 
@@ -64,7 +73,7 @@ class DashboardOverview:
         return not self.due
 
 
-def build_dashboard_overview(db: Session, account: Account) -> DashboardOverview:
+def build_dashboard_overview(db: Session, account: Account, *, adherence_range: str = "month", from_date: date | None = None, to_date: date | None = None) -> DashboardOverview:
     catch_up_episode_phases(db, reason="dashboard-read", account=account)
     due_raw = due_items(db, account)
     due_ids = {item["episode_id"] for item in due_raw}
@@ -84,11 +93,13 @@ def build_dashboard_overview(db: Session, account: Account) -> DashboardOverview
         [_row_from_episode(episode, subjects, locations, applications.get(episode.id, [])) for episode in episodes],
         key=lambda row: row.location_name,
     )
+    selected_adherence_range = _resolve_adherence_range(db, account, adherence_range, from_date, to_date)
     return DashboardOverview(
         due=due,
         upcoming=upcoming,
         active_locations=active_locations,
-        adherence=_adherence_summaries(db, account),
+        adherence=_adherence_summaries(db, account, selected_adherence_range),
+        adherence_range=selected_adherence_range,
         phase_catch_up=get_last_successful_phase_catch_up(),
         generated_at=utc_now(),
     )
@@ -229,27 +240,48 @@ def _image_url(location: BodyLocation) -> str | None:
     return f"/dashboard/locations/{location.id}/image"
 
 
-def _adherence_summaries(db: Session, account: Account) -> list[DashboardAdherence]:
+def _resolve_adherence_range(
+    db: Session,
+    account: Account,
+    range_key: str,
+    custom_from: date | None,
+    custom_to: date | None,
+) -> DashboardAdherenceRange:
     today = local_date(utc_now())
-    windows = [("7 days", today - timedelta(days=6), today), ("30 days", today - timedelta(days=29), today)]
-    summaries: list[DashboardAdherence] = []
-    for label, from_date, to_date in windows:
-        rows = list_adherence_rows(db, account, from_date, to_date, persisted=False)
-        summary = summarize_adherence(rows)
-        summaries.append(
-            DashboardAdherence(
-                label=label,
-                from_date=from_date,
-                to_date=to_date,
-                expected=summary.expected_total,
-                completed=summary.completed_total,
-                score=summary.adherence_score,
-                missed_days=summary.missed_day_count,
-                partial_days=summary.partial_day_count,
-                habit_chain=_habit_chain(rows, from_date, to_date, today),
-            )
+    if range_key == "week":
+        return DashboardAdherenceRange("week", "Last week", today - timedelta(days=6), today)
+    if range_key == "year":
+        return DashboardAdherenceRange("year", "Last year", today - timedelta(days=364), today)
+    if range_key == "all":
+        earliest = _earliest_episode_date(db, account) or today
+        return DashboardAdherenceRange("all", "All time", earliest, today)
+    if range_key == "custom" and custom_from is not None and custom_to is not None and custom_from <= custom_to:
+        return DashboardAdherenceRange("custom", "Custom range", custom_from, custom_to)
+    return DashboardAdherenceRange("month", "Last month", today - timedelta(days=29), today)
+
+
+def _earliest_episode_date(db: Session, account: Account) -> date | None:
+    values = [local_date(episode.phase_started_at) for episode in list_episodes(db, account) if episode.status != "obsolete"]
+    return min(values) if values else None
+
+
+def _adherence_summaries(db: Session, account: Account, selected_range: DashboardAdherenceRange) -> list[DashboardAdherence]:
+    today = local_date(utc_now())
+    rows = list_adherence_rows(db, account, selected_range.from_date, selected_range.to_date, persisted=False)
+    summary = summarize_adherence(rows)
+    return [
+        DashboardAdherence(
+            label=selected_range.label,
+            from_date=selected_range.from_date,
+            to_date=selected_range.to_date,
+            expected=summary.expected_total,
+            completed=summary.completed_total,
+            score=summary.adherence_score,
+            missed_days=summary.missed_day_count,
+            partial_days=summary.partial_day_count,
+            habit_chain=_habit_chain(rows, selected_range.from_date, selected_range.to_date, today),
         )
-    return summaries
+    ]
 
 
 def _habit_chain(rows, from_date: date, to_date: date, today: date) -> tuple[DashboardHabitDay, ...]:

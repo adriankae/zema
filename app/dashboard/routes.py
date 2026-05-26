@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -29,6 +30,9 @@ from app.services import authenticate_user, issue_login_token, log_application
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 ASSET_DIR = Path(__file__).parent / "static"
+THEME_COOKIE = "zema_theme"
+THEME_PATH = SESSION_PATH
+
 
 
 def _format_datetime(value) -> str:
@@ -45,6 +49,31 @@ def _format_date(value) -> str:
 
 templates.env.filters["zdt"] = _format_datetime
 templates.env.filters["zdate"] = _format_date
+
+
+
+def _dashboard_theme(request: Request) -> str:
+    return "light" if request.cookies.get(THEME_COOKIE) == "light" else "dark"
+
+
+def _parse_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _overview_from_request(db: Session, account: Account, request: Request):
+    query = request.query_params
+    return build_dashboard_overview(
+        db,
+        account,
+        adherence_range=query.get("adherence_range") or "month",
+        from_date=_parse_date(query.get("from_date")),
+        to_date=_parse_date(query.get("to_date")),
+    )
 
 
 def _redirect_to_login() -> RedirectResponse:
@@ -67,7 +96,7 @@ def dashboard_home(request: Request, db: Session = Depends(get_db)):
     account = load_dashboard_account(request, db)
     if account is None:
         return _redirect_to_login()
-    overview = build_dashboard_overview(db, account)
+    overview = _overview_from_request(db, account, request)
     return _html(
         request,
         "dashboard.html",
@@ -75,6 +104,7 @@ def dashboard_home(request: Request, db: Session = Depends(get_db)):
             "account": account,
             "overview": overview,
             "csrf_token": issue_csrf_token(account),
+            "theme": _dashboard_theme(request),
         },
     )
 
@@ -87,7 +117,7 @@ def dashboard_home_slash(request: Request, db: Session = Depends(get_db)):
 @router.get("/login", response_class=HTMLResponse)
 def dashboard_login_form(request: Request):
     csrf_token = issue_login_csrf_token()
-    response = _html(request, "login.html", {"error": None, "csrf_token": csrf_token})
+    response = _html(request, "login.html", {"error": None, "csrf_token": csrf_token, "theme": _dashboard_theme(request)})
     response.set_cookie(
         LOGIN_CSRF_COOKIE,
         csrf_token,
@@ -121,7 +151,7 @@ def dashboard_login(
         response = _html(
             request,
             "login.html",
-            {"error": "This form expired. Reload and try again.", "csrf_token": fresh_token},
+            {"error": "This form expired. Reload and try again.", "csrf_token": fresh_token, "theme": _dashboard_theme(request)},
             status_code=status.HTTP_403_FORBIDDEN,
         )
         response.set_cookie(
@@ -136,7 +166,7 @@ def dashboard_login(
     try:
         account = authenticate_user(db, username, password)
     except HTTPException:
-        return _html(request, "login.html", {"error": "Invalid username or password.", "csrf_token": csrf_token}, status_code=status.HTTP_401_UNAUTHORIZED)
+        return _html(request, "login.html", {"error": "Invalid username or password.", "csrf_token": csrf_token, "theme": _dashboard_theme(request)}, status_code=status.HTTP_401_UNAUTHORIZED)
     response = RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         SESSION_COOKIE,
@@ -149,6 +179,30 @@ def dashboard_login(
     response.delete_cookie(LOGIN_CSRF_COOKIE, path=SESSION_PATH, samesite="lax", secure=dashboard_cookie_secure(), httponly=True)
     return response
 
+
+
+@router.post("/theme")
+def dashboard_theme(
+    request: Request,
+    theme: str = Form(...),
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    selected = "light" if theme == "light" else "dark"
+    response = RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        THEME_COOKIE,
+        selected,
+        httponly=True,
+        secure=dashboard_cookie_secure(),
+        samesite="lax",
+        path=THEME_PATH,
+    )
+    return response
 
 @router.post("/logout")
 def dashboard_logout(
@@ -182,7 +236,7 @@ def dashboard_log_treatment(
     try:
         require_valid_csrf(csrf_token, account)
     except HTTPException:
-        overview = build_dashboard_overview(db, account)
+        overview = _overview_from_request(db, account, request)
         return _html(
             request,
             "dashboard.html",
@@ -190,6 +244,7 @@ def dashboard_log_treatment(
                 "account": account,
                 "overview": overview,
                 "csrf_token": issue_csrf_token(account),
+                "theme": _dashboard_theme(request),
                 "error": "This form expired. Reload and try again.",
             },
             status_code=status.HTTP_403_FORBIDDEN,

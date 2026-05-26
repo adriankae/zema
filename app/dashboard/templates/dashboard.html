@@ -6,15 +6,27 @@
     <title>Zema Dashboard</title>
     <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
   </head>
-  <body>
+  <body class="theme-{{ theme }}">
     <header class="topbar">
       <div>
         <p class="eyebrow">Zema</p>
       </div>
-      <form method="post" action="/dashboard/logout">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="secondary-button" type="submit">Log out</button>
-      </form>
+      <div class="topbar-actions">
+        <form method="post" action="/dashboard/theme">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if theme == "dark" %}
+            <input type="hidden" name="theme" value="light">
+            <button class="icon-button" type="submit" aria-label="Switch to light mode"><span aria-hidden="true">☀️</span></button>
+          {% else %}
+            <input type="hidden" name="theme" value="dark">
+            <button class="icon-button" type="submit" aria-label="Switch to dark mode"><span aria-hidden="true">🌙</span></button>
+          {% endif %}
+        </form>
+        <form method="post" action="/dashboard/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="secondary-button" type="submit">Log out</button>
+        </form>
+      </div>
     </header>
 
     <main class="page">
@@ -25,7 +37,7 @@
         <div>
           <p class="eyebrow">Today</p>
           {% if overview.all_clear %}
-            <h2>All clear for now</h2>
+            <h2>All clear</h2>
             <p>No treatment is due at this moment.</p>
           {% else %}
             <h2>{{ overview.due|length }} treatment{% if overview.due|length != 1 %}s{% endif %} due now</h2>
@@ -140,6 +152,16 @@
             <h2 id="adherence-title">Adherence</h2>
           </div>
           <div class="card adherence-card">
+            <form method="get" action="/dashboard" class="range-form" aria-label="Adherence range">
+              <label><input type="radio" name="adherence_range" value="week"{% if overview.adherence_range.key == "week" %} checked{% endif %}> Last week</label>
+              <label><input type="radio" name="adherence_range" value="month"{% if overview.adherence_range.key == "month" %} checked{% endif %}> Last month</label>
+              <label><input type="radio" name="adherence_range" value="year"{% if overview.adherence_range.key == "year" %} checked{% endif %}> Last year</label>
+              <label><input type="radio" name="adherence_range" value="all"{% if overview.adherence_range.key == "all" %} checked{% endif %}> All time</label>
+              <label><input type="radio" name="adherence_range" value="custom"{% if overview.adherence_range.key == "custom" %} checked{% endif %}> Custom</label>
+              <label><span>From</span><input type="date" name="from_date" value="{{ overview.adherence_range.from_date.isoformat() }}"></label>
+              <label><span>To</span><input type="date" name="to_date" value="{{ overview.adherence_range.to_date.isoformat() }}"></label>
+              <button class="secondary-button compact-button" type="submit">Apply</button>
+            </form>
             {% for item in overview.adherence %}
               <div class="adherence-row">
                 <div>

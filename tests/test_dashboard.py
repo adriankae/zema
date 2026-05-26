@@ -170,7 +170,8 @@ def test_authenticated_dashboard_renders_all_clear_overview(client):
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Treatment Control Center" not in response.text
-    assert "All clear for now" in response.text
+    assert "All clear" in response.text
+    assert "All clear for now" not in response.text
     assert "No treatment is due at this moment" in response.text
     assert "Upcoming" in response.text
     assert "Forearm" in response.text
@@ -330,6 +331,71 @@ def test_dashboard_adherence_uses_rolling_taper_schedule_and_renders_habit_chain
     assert 'class="habit-chain"' in response.text
     assert 'data-date="2026-05-26"' in response.text
     assert 'data-status="missed"' not in response.text
+
+
+def test_dashboard_defaults_to_dark_theme_and_exposes_theme_toggle(client):
+    _create_taper_episode(location_code="theme_default", location_name="Theme default")
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert '<body class="theme-dark">' in response.text
+    assert 'aria-label="Switch to light mode"' in response.text
+    assert '☀️' in response.text
+
+
+def test_dashboard_theme_toggle_sets_cookie(client):
+    _login(client)
+    dashboard = client.get("/dashboard")
+    csrf = _csrf_token(dashboard.text)
+
+    response = client.post("/dashboard/theme", data={"theme": "light", "csrf_token": csrf}, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/dashboard"
+    cookie = response.headers["set-cookie"]
+    assert "zema_theme=light" in cookie
+    assert "Path=/dashboard" in cookie
+
+
+def test_adherence_range_controls_render_and_select_last_month_by_default(client):
+    _create_taper_episode(location_code="range_default", location_name="Range default")
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert 'name="adherence_range"' in response.text
+    assert 'value="week"' in response.text
+    assert 'value="month" checked' in response.text
+    assert 'value="year"' in response.text
+    assert 'value="all"' in response.text
+    assert 'name="from_date"' in response.text
+    assert 'name="to_date"' in response.text
+    assert "Last month" in response.text
+
+
+def test_custom_adherence_range_uses_requested_dates(client, monkeypatch):
+    import app.adherence as adherence
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    _create_taper_episode(location_code="custom_range", location_name="Custom range")
+    _login(client)
+
+    response = client.get("/dashboard?adherence_range=custom&from_date=2026-05-20&to_date=2026-05-26")
+
+    assert response.status_code == 200
+    assert 'value="custom" checked' in response.text
+    assert 'value="2026-05-20"' in response.text
+    assert 'value="2026-05-26"' in response.text
+    assert "Custom range" in response.text
+    assert 'data-date="2026-05-20"' in response.text
+    assert 'data-date="2026-05-26"' in response.text
 
 
 def test_dashboard_html_does_not_expose_tokens_or_browser_token_storage(client):

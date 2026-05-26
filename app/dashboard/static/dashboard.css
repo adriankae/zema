@@ -1,4 +1,19 @@
 :root {
+  color-scheme: dark;
+  --bg: #0b0b0f;
+  --card: #17171c;
+  --text: #f5f5f7;
+  --muted: #a1a1aa;
+  --line: rgba(255, 255, 255, 0.13);
+  --accent: #0a84ff;
+  --ok: #30d158;
+  --warn: #ff9f0a;
+  --field: #101015;
+  --soft: rgba(255, 255, 255, 0.07);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+
+.theme-light {
   color-scheme: light;
   --bg: #f5f5f7;
   --card: #ffffff;
@@ -8,6 +23,8 @@
   --accent: #0071e3;
   --ok: #248a3d;
   --warn: #b25000;
+  --field: #ffffff;
+  --soft: #e8e8ed;
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.08);
 }
 
@@ -84,7 +101,7 @@ h3 {
 .list-card,
 .login-card {
   background: var(--card);
-  border: 1px solid rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--line);
   border-radius: 24px;
   box-shadow: var(--shadow);
 }
@@ -198,8 +215,8 @@ h3 {
 .location-initial {
   display: grid;
   place-items: center;
-  background: #e8f1fb;
-  color: #0a5fbd;
+  background: var(--soft);
+  color: var(--accent);
   font-size: 24px;
   font-weight: 700;
 }
@@ -247,6 +264,7 @@ input {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 14px;
+  background: var(--field);
   color: var(--text);
   padding: 12px 14px;
 }
@@ -262,9 +280,25 @@ button {
   padding: 0 18px;
 }
 
-.secondary-button {
-  background: #e8e8ed;
+.secondary-button,
+.icon-button {
+  background: var(--soft);
   color: var(--text);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.icon-button {
+  width: 44px;
+  padding: 0;
+}
+
+.compact-button {
+  min-height: 38px;
 }
 
 .list-card {
@@ -336,20 +370,46 @@ button {
   font-size: 34px;
 }
 
+.range-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+
+.range-form label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.range-form label:has(input[type="date"]) {
+  display: grid;
+  min-width: 140px;
+}
+
+.range-form input[type="radio"] {
+  width: auto;
+}
+
 
 .habit-chain {
   display: grid;
-  grid-template-columns: repeat(15, 1fr);
+  grid-template-columns: repeat(10, minmax(0, 1fr));
   gap: 7px;
+  min-width: 0;
   padding-top: 2px;
 }
 
 .habit-dot {
   width: 100%;
+  min-width: 0;
   aspect-ratio: 1;
   border-radius: 7px;
-  background: #e5e5ea;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--soft);
+  border: 1px solid var(--line);
 }
 
 .habit-completed {
@@ -368,11 +428,11 @@ button {
 }
 
 .habit-future {
-  background: #f5f5f7;
+  background: var(--bg);
 }
 
 .habit-today {
-  box-shadow: 0 0 0 2px #1d1d1f;
+  box-shadow: 0 0 0 2px var(--text);
 }
 
 .login-page {

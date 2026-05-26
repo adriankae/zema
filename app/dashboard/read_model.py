@@ -31,6 +31,13 @@ class DashboardEpisodeRow:
 
 
 @dataclass(frozen=True)
+class DashboardHabitDay:
+    date: date
+    status: str
+    is_today: bool
+
+
+@dataclass(frozen=True)
 class DashboardAdherence:
     label: str
     from_date: date
@@ -40,6 +47,7 @@ class DashboardAdherence:
     score: float | None
     missed_days: int
     partial_days: int
+    habit_chain: tuple[DashboardHabitDay, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -238,6 +246,32 @@ def _adherence_summaries(db: Session, account: Account) -> list[DashboardAdheren
                 score=summary.adherence_score,
                 missed_days=summary.missed_day_count,
                 partial_days=summary.partial_day_count,
+                habit_chain=_habit_chain(rows, from_date, to_date, today),
             )
         )
     return summaries
+
+
+def _habit_chain(rows, from_date: date, to_date: date, today: date) -> tuple[DashboardHabitDay, ...]:
+    by_date: dict[date, list] = {}
+    for row in rows:
+        by_date.setdefault(row.date, []).append(row)
+
+    days: list[DashboardHabitDay] = []
+    current = from_date
+    while current <= to_date:
+        day_rows = by_date.get(current, [])
+        statuses = {row.status for row in day_rows}
+        if "missed" in statuses:
+            status = "missed"
+        elif "partial" in statuses:
+            status = "partial"
+        elif "completed" in statuses:
+            status = "completed"
+        elif "future" in statuses:
+            status = "future"
+        else:
+            status = "not_due"
+        days.append(DashboardHabitDay(date=current, status=status, is_today=current == today))
+        current += timedelta(days=1)
+    return tuple(days)

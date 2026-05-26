@@ -374,11 +374,36 @@ def test_taper_schedule_and_half_open_phase_boundaries():
         rows = calculate_episode_adherence(db, account, episode.id, date(2026, 1, 2), date(2026, 1, 6))
         by_date = {row.date: row for row in rows}
 
-        assert by_date[date(2026, 1, 2)].expected_applications == 1
+        assert by_date[date(2026, 1, 2)].expected_applications == 0
         assert by_date[date(2026, 1, 3)].expected_applications == 0
         assert by_date[date(2026, 1, 4)].expected_applications == 1
-        assert by_date[date(2026, 1, 5)].expected_applications == 0
+        assert by_date[date(2026, 1, 5)].expected_applications == 1
         assert date(2026, 1, 6) not in by_date
+    finally:
+        db.close()
+
+
+def test_taper_adherence_uses_last_application_rolling_schedule(monkeypatch):
+    import app.adherence as adherence
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 5, 1, 8, tzinfo=timezone.utc))
+        heal_episode(db, account, episode.id, datetime(2026, 5, 20, 8, tzinfo=timezone.utc), "user", "test")
+        _log_application(db, account, episode.id, datetime(2026, 5, 23, 9, tzinfo=timezone.utc))
+        _log_application(db, account, episode.id, datetime(2026, 5, 25, 9, tzinfo=timezone.utc))
+
+        rows = calculate_episode_adherence(db, account, episode.id, date(2026, 5, 20), date(2026, 5, 26))
+        by_date = {row.date: row for row in rows}
+
+        assert by_date[date(2026, 5, 22)].status == "completed"
+        assert by_date[date(2026, 5, 22)].credited_applications == 1
+        assert by_date[date(2026, 5, 23)].status == "not_due"
+        assert by_date[date(2026, 5, 24)].status == "not_due"
+        assert by_date[date(2026, 5, 25)].status == "completed"
+        assert by_date[date(2026, 5, 26)].status == "not_due"
     finally:
         db.close()
 

@@ -10,7 +10,6 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">Zema</p>
-        <h1>Treatment Control Center</h1>
       </div>
       <form method="post" action="/dashboard/logout">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -149,6 +148,19 @@
                 </div>
                 <strong>{% if item.score is none %}--{% else %}{{ "%.0f"|format(item.score * 100) }}%{% endif %}</strong>
               </div>
+              {% if item.habit_chain %}
+                <div class="habit-chain" role="list" aria-label="{{ item.label }} adherence chain">
+                  {% for day in item.habit_chain %}
+                    <span
+                      role="listitem"
+                      class="habit-dot habit-{{ day.status }}{% if day.is_today %} habit-today{% endif %}"
+                      data-date="{{ day.date.isoformat() }}"
+                      data-status="{{ day.status }}"
+                      title="{{ day.date|zdate }} · {{ day.status.replace('_', ' ') }}"
+                    ></span>
+                  {% endfor %}
+                </div>
+              {% endif %}
             {% endfor %}
           </div>
         </div>

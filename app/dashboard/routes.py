@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.time import utc_now
+from app.core.time import to_local, utc_now
 from app.dashboard.auth import (
     LOGIN_CSRF_COOKIE,
     SESSION_COOKIE,
@@ -34,7 +34,7 @@ ASSET_DIR = Path(__file__).parent / "static"
 def _format_datetime(value) -> str:
     if value is None:
         return "Not yet"
-    return value.strftime("%b %-d, %H:%M")
+    return to_local(value).strftime("%b %-d, %H:%M")
 
 
 def _format_date(value) -> str:

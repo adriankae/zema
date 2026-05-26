@@ -336,6 +336,45 @@ button {
   font-size: 34px;
 }
 
+
+.habit-chain {
+  display: grid;
+  grid-template-columns: repeat(15, 1fr);
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.habit-dot {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 7px;
+  background: #e5e5ea;
+  border: 1px solid rgba(29, 29, 31, 0.08);
+}
+
+.habit-completed {
+  background: #34c759;
+  border-color: rgba(52, 199, 89, 0.35);
+}
+
+.habit-partial {
+  background: #ffd60a;
+  border-color: rgba(255, 214, 10, 0.45);
+}
+
+.habit-missed {
+  background: #ff453a;
+  border-color: rgba(255, 69, 58, 0.35);
+}
+
+.habit-future {
+  background: #f5f5f7;
+}
+
+.habit-today {
+  box-shadow: 0 0 0 2px #1d1d1f;
+}
+
 .login-page {
   min-height: 100vh;
   display: grid;

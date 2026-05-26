@@ -198,8 +198,46 @@ def calculate_episode_adherence(
         if range_start > range_end:
             continue
 
+        next_due_date = phase_start_date + timedelta(days=phase.apply_every_n_days)
+        uncredited_applications_by_date = dict(applications_by_date)
+
+        def consume_application(date_key: date) -> None:
+            remaining = uncredited_applications_by_date.get(date_key, 0)
+            if remaining <= 1:
+                uncredited_applications_by_date.pop(date_key, None)
+            else:
+                uncredited_applications_by_date[date_key] = remaining - 1
+
+        def next_application_date(from_date_value: date, before_date_value: date) -> date | None:
+            candidates = [
+                application_date
+                for application_date, count in uncredited_applications_by_date.items()
+                if count > 0 and from_date_value <= application_date < before_date_value and application_date <= today
+            ]
+            return min(candidates) if candidates else None
+
         for date_value in _iter_dates(range_start, range_end):
-            expected, completed, credited = _adherence_counts_for_date(phase, history, applications, applications_by_date, date_value)
+            if phase.phase_number == 1 and phase.applications_per_day == 2:
+                expected, completed, credited = _adherence_counts_for_date(phase, history, applications, applications_by_date, date_value)
+            else:
+                completed = applications_by_date.get(date_value, 0)
+                if date_value >= next_due_date:
+                    expected = phase.applications_per_day
+                    credited_date = next_application_date(next_due_date, next_due_date + timedelta(days=phase.apply_every_n_days))
+                    if credited_date is None:
+                        credited = 0
+                    else:
+                        credited = expected
+                        consume_application(credited_date)
+                        next_due_date = credited_date + timedelta(days=phase.apply_every_n_days)
+                elif uncredited_applications_by_date.get(date_value, 0) >= phase.applications_per_day:
+                    expected = phase.applications_per_day
+                    credited = expected
+                    consume_application(date_value)
+                    next_due_date = date_value + timedelta(days=phase.apply_every_n_days)
+                else:
+                    expected = 0
+                    credited = 0
             rows.append(
                 CalculatedAdherenceDay(
                     account_id=episode.account_id,

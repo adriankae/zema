@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 
 from app.core.database import SessionLocal
@@ -116,6 +116,7 @@ def test_dashboard_login_returns_html(client):
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "<form" in response.text
+    assert "Treatment Control Center" not in response.text
 
 
 def test_bad_login_does_not_set_session_cookie(client):
@@ -168,6 +169,7 @@ def test_authenticated_dashboard_renders_all_clear_overview(client):
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
+    assert "Treatment Control Center" not in response.text
     assert "All clear for now" in response.text
     assert "No treatment is due at this moment" in response.text
     assert "Upcoming" in response.text
@@ -277,6 +279,57 @@ def test_upcoming_section_renders_active_and_tapering_non_due_episodes(client, m
     assert "Taper clear" in response.text
     assert "Phase 1" in response.text
     assert "Phase 2" in response.text
+
+
+def test_upcoming_times_are_rendered_in_deployment_timezone(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 19, 55, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 19, 55, tzinfo=timezone.utc))
+    _create_taper_episode(location_code="berlin_next", location_name="Berlin next")
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "Next May 27, 00:00" in response.text
+    assert "Next May 26, 22:00" not in response.text
+
+
+def test_dashboard_adherence_uses_rolling_taper_schedule_and_renders_habit_chain(client, monkeypatch):
+    import app.adherence as adherence
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    episode_id = _create_taper_episode(
+        location_code="rolling_taper",
+        location_name="Rolling taper",
+        healed_at=datetime(2026, 5, 20, 8, tzinfo=timezone.utc),
+    )
+    db = SessionLocal()
+    try:
+        from app.models import Account
+
+        account = db.query(Account).filter(Account.username == "admin").one()
+        log_application(db, account, episode_id, datetime(2026, 5, 22, 9, tzinfo=timezone.utc), "steroid", None, None, None, "user", f"user:{account.id}")
+        log_application(db, account, episode_id, datetime(2026, 5, 23, 9, tzinfo=timezone.utc), "steroid", None, None, None, "user", f"user:{account.id}")
+    finally:
+        db.close()
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "100%" in response.text
+    assert 'class="habit-chain"' in response.text
+    assert 'data-date="2026-05-26"' in response.text
+    assert 'data-status="missed"' not in response.text
 
 
 def test_dashboard_html_does_not_expose_tokens_or_browser_token_storage(client):

@@ -55,6 +55,7 @@ from app.services import (
     advance_episode,
     authenticate_user,
     bootstrap_data,
+    catch_up_episode_phases,
     create_api_key,
     create_episode,
     create_location,
@@ -64,6 +65,7 @@ from app.services import (
     due_items,
     get_application,
     get_episode,
+    get_last_successful_phase_catch_up,
     get_location,
     get_subject,
     issue_login_token,
@@ -180,8 +182,12 @@ def install_error_handlers(app: FastAPI) -> None:
 
 
 @router.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict:
+    payload = {"status": "ok"}
+    last_catch_up = get_last_successful_phase_catch_up()
+    if last_catch_up is not None:
+        payload["phase_catch_up"] = last_catch_up
+    return payload
 
 
 @router.get("/")
@@ -281,6 +287,7 @@ def episodes_list(subject_id: int | None = None, status: str | None = None, acto
 
 @router.get("/episodes/due", response_model=DueListResponse)
 def episodes_due(subject_id: int | None = None, actor: ActorContext = Depends(get_current_actor), db: Session = Depends(get_db)):
+    catch_up_episode_phases(db, reason="due-read", account=actor.account, subject_id=subject_id)
     return DueListResponse(due=due_items(db, actor.account, subject_id))
 
 

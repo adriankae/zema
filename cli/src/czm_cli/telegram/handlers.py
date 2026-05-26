@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from telegram.error import BadRequest
 
-from czm_cli.errors import CzmError, EXIT_AUTH, EXIT_NOT_FOUND, EXIT_USAGE
+from czm_cli.errors import CzmError, EXIT_AUTH, EXIT_NOT_FOUND, EXIT_TRANSPORT, EXIT_USAGE
 from czm_cli.telegram import formatting
 from czm_cli.telegram.heatmap import build_heatmap_grid, render_heatmap_png
 from czm_cli.telegram.commands import TelegramCommandContext
@@ -96,7 +96,10 @@ def _dispatch_callback(data: str, handler_ctx: TelegramHandlerContext, update) -
     if data.startswith("due:log:"):
         ensure_writes_allowed(config.telegram)
         episode_id = int(data.rsplit(":", 1)[1])
-        label = _due_location_label_for_episode(handler_ctx, episode_id)
+        due_item = _current_due_item_for_episode(handler_ctx, episode_id)
+        if due_item is None:
+            return "This due item is no longer due or was already handled.", None
+        label = due_item.get("telegram_location_name") or due_item.get("telegram_label") or f"episode {episode_id}"
         client.post("/applications", json={"episode_id": episode_id})
         return f"Logged application for '{label}'", None
     if data == "menu:subjects":
@@ -458,7 +461,11 @@ async def _send_due_prompts(update, context, handler_ctx: TelegramHandlerContext
     del context
     query = update.callback_query
     message = query.message
-    due_items = _enriched_due_items(handler_ctx)
+    try:
+        due_items = _enriched_due_items(handler_ctx)
+    except CzmError as exc:
+        await safe_edit_callback_message(query, _format_due_failure(exc))
+        return
     if not due_items:
         await safe_edit_callback_message(query, "No treatments are due right now.")
         return
@@ -470,7 +477,11 @@ async def _send_due_prompts(update, context, handler_ctx: TelegramHandlerContext
 
 
 async def _send_due_prompts_from_message(message, handler_ctx: TelegramHandlerContext) -> None:
-    due_items = _enriched_due_items(handler_ctx)
+    try:
+        due_items = _enriched_due_items(handler_ctx)
+    except CzmError as exc:
+        await message.reply_text(_format_due_failure(exc))
+        return
     if not due_items:
         await message.reply_text("No treatments are due right now.")
         return
@@ -532,14 +543,24 @@ def _format_subject_delete_error(exc: CzmError) -> str:
     return formatting.backend_error_message(exc.message)
 
 
-def _due_location_label_for_episode(handler_ctx: TelegramHandlerContext, episode_id: int) -> str:
-    try:
-        for item in _enriched_due_items(handler_ctx):
-            if int(item.get("episode_id")) == episode_id:
-                return item.get("telegram_location_name") or item.get("telegram_label") or f"episode {episode_id}"
-    except Exception:
-        pass
-    return f"episode {episode_id}"
+def _format_due_failure(exc: CzmError) -> str:
+    status_code = getattr(exc, "status_code", None)
+    if exc.message == "Zema returned an unreadable due response.":
+        return exc.message
+    if exc.exit_code == EXIT_AUTH:
+        return "Zema authentication failed. Tracking is not active."
+    if status_code is not None and status_code >= 500:
+        return "Zema backend failed while checking due treatments."
+    if exc.exit_code == EXIT_TRANSPORT:
+        return "Zema backend did not respond. Do not assume nothing is due."
+    return formatting.backend_error_message(exc.message)
+
+
+def _current_due_item_for_episode(handler_ctx: TelegramHandlerContext, episode_id: int) -> dict | None:
+    for item in _enriched_due_items(handler_ctx):
+        if int(item.get("episode_id")) == episode_id:
+            return item
+    return None
 
 
 def _subject_name_for_id(handler_ctx: TelegramHandlerContext, subject_id: int) -> str:
@@ -551,7 +572,7 @@ def _subject_name_for_id(handler_ctx: TelegramHandlerContext, subject_id: int) -
 
 
 def _enriched_due_items(handler_ctx: TelegramHandlerContext) -> list[dict]:
-    due_items = handler_ctx.command_context.client.get("/episodes/due").get("due", [])
+    due_items = _raw_due_items(handler_ctx)
     subjects = handler_ctx.command_context.client.get("/subjects").get("subjects", [])
     locations = handler_ctx.command_context.client.get("/locations").get("locations", [])
     episodes = handler_ctx.command_context.client.get("/episodes").get("episodes", [])
@@ -588,6 +609,18 @@ def _enriched_due_items(handler_ctx: TelegramHandlerContext) -> list[dict]:
         copied["telegram_timezone"] = timezone_name
         enriched.append(copied)
     return enriched
+
+
+def _raw_due_items(handler_ctx: TelegramHandlerContext) -> list[dict]:
+    payload = handler_ctx.command_context.client.get("/episodes/due")
+    if not isinstance(payload, dict):
+        raise CzmError("Zema returned an unreadable due response.", exit_code=EXIT_TRANSPORT)
+    due_items = payload.get("due")
+    if not isinstance(due_items, list):
+        raise CzmError("Zema returned an unreadable due response.", exit_code=EXIT_TRANSPORT)
+    if not all(isinstance(item, dict) for item in due_items):
+        raise CzmError("Zema returned an unreadable due response.", exit_code=EXIT_TRANSPORT)
+    return due_items
 
 
 async def handle_guided_text(update, context, handler_ctx: TelegramHandlerContext) -> bool:

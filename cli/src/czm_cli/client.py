@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json as json_module
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,10 @@ class CzmClient:
         if response.status_code >= 400:
             raise self._map_http_error(response)
         if response.content:
-            return response.json()
+            try:
+                return response.json()
+            except json_module.JSONDecodeError as exc:
+                raise TransportError("Zema returned an unreadable response.") from exc
         return None
 
     def request_bytes(self, method: str, path: str, *, params: Mapping[str, Any] | None = None) -> tuple[bytes, str | None]:
@@ -84,7 +88,10 @@ class CzmClient:
         if response.status_code >= 400:
             raise self._map_http_error(response)
         if response.content:
-            return response.json()
+            try:
+                return response.json()
+            except json_module.JSONDecodeError as exc:
+                raise TransportError("Zema returned an unreadable response.") from exc
         return None
 
     def upload_bytes(self, path: str, *, field_name: str, filename: str, content: bytes, content_type: str | None = None) -> Any:
@@ -96,7 +103,10 @@ class CzmClient:
         if response.status_code >= 400:
             raise self._map_http_error(response)
         if response.content:
-            return response.json()
+            try:
+                return response.json()
+            except json_module.JSONDecodeError as exc:
+                raise TransportError("Zema returned an unreadable response.") from exc
         return None
 
     def patch(self, path: str, *, json: Mapping[str, Any] | None = None, params: Mapping[str, Any] | None = None) -> Any:

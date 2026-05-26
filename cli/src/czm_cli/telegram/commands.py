@@ -6,7 +6,7 @@ from typing import Callable
 
 from czm_cli.client import CzmClient
 from czm_cli.config import AppConfig
-from czm_cli.errors import CzmError, EXIT_USAGE
+from czm_cli.errors import CzmError, EXIT_TRANSPORT, EXIT_USAGE
 from czm_cli.telegram import formatting
 from czm_cli.telegram.parser import ParsedTelegramCommand, parse_telegram_command, require_int, require_no_options, require_options
 from czm_cli.telegram.security import ensure_rebuild_allowed, ensure_writes_allowed
@@ -116,7 +116,10 @@ def _episode_create(ctx: TelegramCommandContext, parsed: ParsedTelegramCommand) 
 
 def _due(ctx: TelegramCommandContext, parsed: ParsedTelegramCommand) -> str:
     require_no_options(parsed)
-    return formatting.format_due(ctx.client.get("/episodes/due"))
+    payload = ctx.client.get("/episodes/due")
+    if not isinstance(payload, dict) or not isinstance(payload.get("due"), list):
+        raise CzmError("Zema returned an unreadable due response.", exit_code=EXIT_TRANSPORT)
+    return formatting.format_due(payload)
 
 
 def _log(ctx: TelegramCommandContext, parsed: ParsedTelegramCommand) -> str:

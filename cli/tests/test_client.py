@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from czm_cli.client import CzmClient
-from czm_cli.errors import EXIT_AUTH, EXIT_CONFLICT, EXIT_NOT_FOUND, EXIT_USAGE
+from czm_cli.errors import EXIT_AUTH, EXIT_CONFLICT, EXIT_NOT_FOUND, EXIT_TRANSPORT, EXIT_USAGE
 
 
 def test_client_sets_api_key_header_and_parses_json():
@@ -43,3 +43,16 @@ def test_client_maps_http_errors(status: int, exit_code: int):
     finally:
         client.close()
 
+
+def test_client_maps_malformed_success_json_to_transport_error():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{not-json", headers={"content-type": "application/json"})
+
+    client = CzmClient("http://example.test", "secret", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(Exception) as excinfo:
+            client.get("/episodes/due")
+        assert getattr(excinfo.value, "exit_code") == EXIT_TRANSPORT
+        assert "unreadable" in str(excinfo.value)
+    finally:
+        client.close()

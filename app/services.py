@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+import logging
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -25,6 +27,8 @@ from app.models import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 VALID_EPISODE_STATUSES = {"active_flare", "in_taper", "obsolete"}
 VALID_TREATMENT_TYPES = {"steroid", "emollient", "other"}
 VALID_EVENT_TYPES = {
@@ -38,6 +42,47 @@ VALID_EVENT_TYPES = {
     "application_voided",
     "episode_obsoleted",
 }
+
+
+@dataclass(slots=True)
+class PhaseCatchUpTransition:
+    episode_id: int
+    account_id: int
+    subject_id: int
+    previous_phase: int
+    resulting_phase: int
+    previous_phase_due_end_at: datetime | None
+    transition_count: int
+    event_count: int
+    status: str
+
+
+@dataclass(slots=True)
+class PhaseCatchUpResult:
+    reason: str
+    ran_at: datetime
+    timezone: str
+    local_date: str
+    changed_count: int = 0
+    transition_count: int = 0
+    transitions: list[PhaseCatchUpTransition] = field(default_factory=list)
+
+
+_last_successful_phase_catch_up: PhaseCatchUpResult | None = None
+
+
+def get_last_successful_phase_catch_up() -> dict | None:
+    if _last_successful_phase_catch_up is None:
+        return None
+    result = _last_successful_phase_catch_up
+    return {
+        "ran_at": result.ran_at.isoformat(),
+        "reason": result.reason,
+        "changed_count": result.changed_count,
+        "transition_count": result.transition_count,
+        "timezone": result.timezone,
+        "local_date": result.local_date,
+    }
 
 
 def bootstrap_data(db: Session) -> None:
@@ -477,15 +522,94 @@ def advance_episode(db: Session, account: Account, episode_id: int, now: datetim
     return _advance_to_next_phase(db, episode, now, actor_type, actor_id)
 
 
-def auto_advance_due_episodes(db: Session, now: datetime) -> int:
-    count = 0
-    episodes = list(db.execute(select(EczemaEpisode).where(EczemaEpisode.status == "in_taper").order_by(EczemaEpisode.id.asc())).scalars())
+def catch_up_episode_phases(
+    db: Session,
+    now: datetime | None = None,
+    *,
+    reason: str,
+    account: Account | None = None,
+    subject_id: int | None = None,
+) -> PhaseCatchUpResult:
+    global _last_successful_phase_catch_up
+
+    run_at = now or utc_now()
+    timezone_name = settings.deployment_timezone
+    result = PhaseCatchUpResult(
+        reason=reason,
+        ran_at=run_at,
+        timezone=timezone_name,
+        local_date=local_date(run_at).isoformat(),
+    )
+    stmt = select(EczemaEpisode).where(EczemaEpisode.status == "in_taper")
+    if account is not None:
+        stmt = stmt.where(EczemaEpisode.account_id == account.id)
+    if subject_id is not None:
+        stmt = stmt.where(EczemaEpisode.subject_id == subject_id)
+    episodes = list(db.execute(stmt.order_by(EczemaEpisode.id.asc())).scalars())
     for episode in episodes:
-        while episode.status == "in_taper" and episode.phase_due_end_at is not None and local_date(now) >= local_date(episode.phase_due_end_at):
-            _advance_to_next_phase(db, episode, now, "system", "system:phase-advance")
-            count += 1
+        episode_transition_count = 0
+        previous_phase = episode.current_phase_number
+        previous_phase_due_end_at = episode.phase_due_end_at
+        while episode.status == "in_taper" and episode.phase_due_end_at is not None and local_date(run_at) >= local_date(episode.phase_due_end_at):
+            _advance_to_next_phase(db, episode, run_at, "system", "system:phase-advance")
+            episode_transition_count += 1
+            result.transition_count += 1
             db.refresh(episode)
-    return count
+        if episode_transition_count:
+            result.changed_count += 1
+            transition = PhaseCatchUpTransition(
+                episode_id=episode.id,
+                account_id=episode.account_id,
+                subject_id=episode.subject_id,
+                previous_phase=previous_phase,
+                resulting_phase=episode.current_phase_number,
+                previous_phase_due_end_at=previous_phase_due_end_at,
+                transition_count=episode_transition_count,
+                event_count=episode_transition_count,
+                status=episode.status,
+            )
+            result.transitions.append(transition)
+            logger.info(
+                "phase_catch_up_transition",
+                extra={
+                    "phase_catch_up": {
+                        "reason": reason,
+                        "timezone": timezone_name,
+                        "local_date": result.local_date,
+                        "episode_id": transition.episode_id,
+                        "account_id": transition.account_id,
+                        "subject_id": transition.subject_id,
+                        "previous_phase": transition.previous_phase,
+                        "resulting_phase": transition.resulting_phase,
+                        "previous_phase_due_end_at": transition.previous_phase_due_end_at.isoformat()
+                        if transition.previous_phase_due_end_at
+                        else None,
+                        "transition_count": transition.transition_count,
+                        "event_count": transition.event_count,
+                        "status": transition.status,
+                    }
+                },
+            )
+    logger.info(
+        "phase_catch_up_complete",
+        extra={
+            "phase_catch_up": {
+                "reason": reason,
+                "timezone": timezone_name,
+                "local_date": result.local_date,
+                "changed_count": result.changed_count,
+                "transition_count": result.transition_count,
+                "account_id": account.id if account is not None else None,
+                "subject_id": subject_id,
+            }
+        },
+    )
+    _last_successful_phase_catch_up = result
+    return result
+
+
+def auto_advance_due_episodes(db: Session, now: datetime) -> int:
+    return catch_up_episode_phases(db, now, reason="scheduler").transition_count
 
 
 def log_application(

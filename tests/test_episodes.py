@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 
 def _create_subject_location(client, headers):
     subject = client.post("/subjects", headers=headers, json={"display_name": "Child"}).json()
@@ -323,6 +325,153 @@ def test_taper_due_returns_only_currently_due_items(client, auth_headers, monkey
     assert due[0]["current_phase_number"] == 2
     assert due[0]["due_slot"] is None
     assert due[0]["missed_slots_today"] == []
+
+
+def test_due_read_catches_up_missed_taper_phase(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.database import SessionLocal
+    from app.models import EczemaEpisode, EpisodeEvent, EpisodePhaseHistory
+
+    episode = _create_taper_episode(client, auth_headers, location_code="missed_scheduler", healed_at="2026-01-01T08:00:00Z")
+    now = datetime(2026, 2, 1, 8, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+
+    due = client.get("/episodes/due", headers=auth_headers)
+    assert due.status_code == 200
+    assert due.json()["due"][0]["episode_id"] == episode["id"]
+    assert due.json()["due"][0]["current_phase_number"] == 3
+
+    db = SessionLocal()
+    try:
+        stored = db.get(EczemaEpisode, episode["id"])
+        assert stored.current_phase_number == 3
+        histories = list(
+            db.execute(
+                select(EpisodePhaseHistory)
+                .where(EpisodePhaseHistory.episode_id == episode["id"])
+                .order_by(EpisodePhaseHistory.phase_number.asc())
+            ).scalars()
+        )
+        assert [history.phase_number for history in histories] == [1, 2, 3]
+        phase_events = list(
+            db.execute(
+                select(EpisodeEvent)
+                .where(EpisodeEvent.episode_id == episode["id"], EpisodeEvent.event_type == "phase_entered")
+                .order_by(EpisodeEvent.occurred_at.asc())
+            ).scalars()
+        )
+        assert [event.payload["to_phase_number"] for event in phase_events] == [2, 3]
+    finally:
+        db.close()
+
+
+def test_repeated_phase_catch_up_is_noop(client, auth_headers):
+    from app.core.database import SessionLocal
+    from app.models import EpisodeEvent, EpisodePhaseHistory
+    from app.services import catch_up_episode_phases
+
+    episode = _create_taper_episode(client, auth_headers, location_code="catchup_noop", healed_at="2026-01-01T08:00:00Z")
+    now = datetime(2026, 2, 1, 8, tzinfo=timezone.utc)
+    db = SessionLocal()
+    try:
+        first = catch_up_episode_phases(db, now, reason="startup")
+        assert first.transition_count == 1
+        history_count = db.execute(select(EpisodePhaseHistory).where(EpisodePhaseHistory.episode_id == episode["id"])).scalars().all()
+        event_count = db.execute(
+            select(EpisodeEvent).where(EpisodeEvent.episode_id == episode["id"], EpisodeEvent.event_type == "phase_entered")
+        ).scalars().all()
+
+        second = catch_up_episode_phases(db, now, reason="startup")
+        assert second.transition_count == 0
+        assert len(db.execute(select(EpisodePhaseHistory).where(EpisodePhaseHistory.episode_id == episode["id"])).scalars().all()) == len(history_count)
+        assert (
+            len(
+                db.execute(
+                    select(EpisodeEvent).where(EpisodeEvent.episode_id == episode["id"], EpisodeEvent.event_type == "phase_entered")
+                )
+                .scalars()
+                .all()
+            )
+            == len(event_count)
+        )
+    finally:
+        db.close()
+
+
+def test_due_read_catch_up_is_account_scoped(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.database import SessionLocal
+    from app.core.security import hash_password
+    from app.models import Account, EczemaEpisode, EpisodeEvent, EpisodePhaseHistory
+
+    account_episode = _create_taper_episode(client, auth_headers, location_code="scoped_account", healed_at="2026-01-01T08:00:00Z")
+    db = SessionLocal()
+    try:
+        other = Account(username="other", password_hash=hash_password("pw"), is_active=True)
+        db.add(other)
+        db.commit()
+        subject = services.create_subject(db, other, "Other child")
+        location = services.create_location(db, other, "other_location", "Other location")
+        other_episode = services.create_episode(
+            db,
+            other,
+            subject.id,
+            location.id,
+            "v1",
+            datetime(2026, 1, 1, 7, tzinfo=timezone.utc),
+            "user",
+            str(other.id),
+        )
+        other_episode = services.heal_episode(db, other, other_episode.id, datetime(2026, 1, 1, 8, tzinfo=timezone.utc), "user", str(other.id))
+        other_episode_id = other_episode.id
+    finally:
+        db.close()
+
+    now = datetime(2026, 2, 1, 8, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    assert client.get("/episodes/due", headers=auth_headers).status_code == 200
+
+    db = SessionLocal()
+    try:
+        own = db.get(EczemaEpisode, account_episode["id"])
+        other = db.get(EczemaEpisode, other_episode_id)
+        assert own.current_phase_number == 3
+        assert other.current_phase_number == 2
+        other_histories = list(db.execute(select(EpisodePhaseHistory).where(EpisodePhaseHistory.episode_id == other_episode_id)).scalars())
+        other_phase_events = list(
+            db.execute(select(EpisodeEvent).where(EpisodeEvent.episode_id == other_episode_id, EpisodeEvent.event_type == "phase_entered")).scalars()
+        )
+        assert [history.phase_number for history in other_histories] == [1, 2]
+        assert [event.payload["to_phase_number"] for event in other_phase_events] == [2]
+    finally:
+        db.close()
+
+
+def test_phase_catch_up_uses_europe_berlin_local_day(client, auth_headers, monkeypatch):
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.models import EczemaEpisode
+    from app.services import catch_up_episode_phases
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    episode = _create_taper_episode(client, auth_headers, location_code="berlin_catchup", healed_at="2026-01-01T23:30:00Z")
+    db = SessionLocal()
+    try:
+        before_local_day = catch_up_episode_phases(db, datetime(2026, 1, 29, 22, 0, tzinfo=timezone.utc), reason="startup")
+        assert before_local_day.transition_count == 0
+        stored = db.get(EczemaEpisode, episode["id"])
+        assert stored.current_phase_number == 2
+
+        on_local_day = catch_up_episode_phases(db, datetime(2026, 1, 29, 23, 0, tzinfo=timezone.utc), reason="startup")
+        assert on_local_day.transition_count == 1
+        db.refresh(stored)
+        assert stored.current_phase_number == 3
+    finally:
+        db.close()
 
 
 def test_relapse_before_cutoff_is_immediately_due_for_morning_slot(client, auth_headers, monkeypatch):

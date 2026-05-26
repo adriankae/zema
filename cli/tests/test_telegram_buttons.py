@@ -5,7 +5,7 @@ import asyncio
 from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 from czm_cli.config import AppConfig, TelegramConfig
-from czm_cli.errors import CzmError, EXIT_CONFLICT, EXIT_NOT_FOUND
+from czm_cli.errors import ApiError, CzmError, EXIT_AUTH, EXIT_CONFLICT, EXIT_NOT_FOUND, EXIT_TRANSPORT
 from czm_cli.telegram.commands import TelegramCommandContext
 from czm_cli.telegram import handlers as handlers_module
 from czm_cli.telegram.handlers import TelegramHandlerContext, handle_callback, handle_guided_text, handle_text_message
@@ -22,6 +22,8 @@ class FakeClient:
         empty_after_log=False,
         delete_error: CzmError | None = None,
         due_items: list[dict] | None = None,
+        due_payload=None,
+        due_error: CzmError | None = None,
         locations: list[dict] | None = None,
         subjects: list[dict] | None = None,
         episodes: list[dict] | None = None,
@@ -33,6 +35,8 @@ class FakeClient:
         self.logged = False
         self.delete_error = delete_error
         self.due_items = due_items
+        self.due_payload = due_payload
+        self.due_error = due_error
         self.subjects = subjects or [{"id": 1, "display_name": "Child A"}]
         self.locations = locations or [{"id": 2, "code": "left_elbow", "display_name": "Left elbow"}]
         self.episodes = episodes or [
@@ -51,6 +55,10 @@ class FakeClient:
     def get(self, path, params=None):
         self.requests.append(("GET", path, params))
         if path == "/episodes/due":
+            if self.due_error is not None:
+                raise self.due_error
+            if self.due_payload is not None:
+                return self.due_payload
             if self.allow_empty or (self.empty_after_log and self.logged):
                 return {"due": []}
             if self.due_items is not None:
@@ -154,6 +162,8 @@ def make_handler(
     empty_after_log=False,
     delete_error=None,
     due_items=None,
+    due_payload=None,
+    due_error=None,
     locations=None,
     subjects=None,
     episodes=None,
@@ -166,6 +176,8 @@ def make_handler(
         empty_after_log=empty_after_log,
         delete_error=delete_error,
         due_items=due_items,
+        due_payload=due_payload,
+        due_error=due_error,
         locations=locations,
         subjects=subjects,
         episodes=episodes,
@@ -345,6 +357,39 @@ def test_due_callback_empty_state():
     assert all(getattr(markup, "remove_keyboard", None) is not True for _text, markup in query.edits)
 
 
+def test_due_callback_transport_error_is_not_empty_state():
+    ctx, _client, update = make_handler(due_error=CzmError("timeout", exit_code=EXIT_TRANSPORT))
+    query = FakeQuery("menu:due")
+    update.callback_query = query
+    run(handle_callback(update, None, ctx))
+    assert query.edits == [("Zema backend did not respond. Do not assume nothing is due.", None)]
+
+
+def test_due_callback_backend_error_is_not_empty_state():
+    error = ApiError("server exploded", exit_code=EXIT_TRANSPORT, status_code=500)
+    ctx, _client, update = make_handler(due_error=error)
+    query = FakeQuery("menu:due")
+    update.callback_query = query
+    run(handle_callback(update, None, ctx))
+    assert query.edits == [("Zema backend failed while checking due treatments.", None)]
+
+
+def test_due_callback_auth_error_is_not_empty_state():
+    ctx, _client, update = make_handler(due_error=CzmError("unauthorized", exit_code=EXIT_AUTH))
+    query = FakeQuery("menu:due")
+    update.callback_query = query
+    run(handle_callback(update, None, ctx))
+    assert query.edits == [("Zema authentication failed. Tracking is not active.", None)]
+
+
+def test_due_callback_malformed_response_is_not_empty_state():
+    ctx, _client, update = make_handler(due_payload={"due": "not-a-list"})
+    query = FakeQuery("menu:due")
+    update.callback_query = query
+    run(handle_callback(update, None, ctx))
+    assert query.edits == [("Zema returned an unreadable due response.", None)]
+
+
 def test_quick_log_button_posts_application():
     ctx, client, update = make_handler(allow_writes=True)
     query = FakeQuery("due:log:12")
@@ -375,13 +420,13 @@ def test_due_today_fetches_fresh_backend_state_after_logging():
     assert query.edits[0][0] == "No treatments are due right now."
 
 
-def test_quick_log_button_falls_back_when_due_item_cannot_be_resolved():
+def test_quick_log_button_rejects_stale_due_item():
     ctx, client, update = make_handler(allow_empty=True)
     query = FakeQuery("due:log:12")
     update.callback_query = query
     run(handle_callback(update, None, ctx))
-    assert ("POST", "/applications", {"episode_id": 12}) in client.requests
-    assert query.edits == [("Logged application for 'episode 12'", None)]
+    assert ("POST", "/applications", {"episode_id": 12}) not in client.requests
+    assert query.edits == [("This due item is no longer due or was already handled.", None)]
 
 
 def test_write_callback_rejected_when_disabled():

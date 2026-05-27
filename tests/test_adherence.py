@@ -408,6 +408,31 @@ def test_taper_adherence_uses_last_application_rolling_schedule(monkeypatch):
         db.close()
 
 
+def test_taper_adherence_rolling_schedule_is_stable_across_short_windows(monkeypatch):
+    import app.adherence as adherence
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 5, 1, 8, tzinfo=timezone.utc))
+        heal_episode(db, account, episode.id, datetime(2026, 5, 20, 8, tzinfo=timezone.utc), "user", "test")
+        _log_application(db, account, episode.id, datetime(2026, 5, 23, 9, tzinfo=timezone.utc))
+        _log_application(db, account, episode.id, datetime(2026, 5, 25, 9, tzinfo=timezone.utc))
+
+        week_rows = calculate_episode_adherence(db, account, episode.id, date(2026, 5, 21), date(2026, 5, 27))
+        month_rows = calculate_episode_adherence(db, account, episode.id, date(2026, 4, 28), date(2026, 5, 27))
+        week_by_date = {row.date: row for row in week_rows}
+        month_by_date = {row.date: row for row in month_rows}
+
+        assert week_by_date[date(2026, 5, 26)].status == "not_due"
+        assert month_by_date[date(2026, 5, 26)].status == "not_due"
+        assert week_by_date[date(2026, 5, 27)].status == "missed"
+        assert month_by_date[date(2026, 5, 27)].status == "missed"
+    finally:
+        db.close()
+
+
 def test_dates_outside_phase_history_are_omitted():
     db = SessionLocal()
     try:

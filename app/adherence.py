@@ -216,7 +216,8 @@ def calculate_episode_adherence(
             ]
             return min(candidates) if candidates else None
 
-        for date_value in _iter_dates(range_start, range_end):
+        iteration_start = range_start if phase.phase_number == 1 and phase.applications_per_day == 2 else phase_start_date
+        for date_value in _iter_dates(iteration_start, range_end):
             if phase.phase_number == 1 and phase.applications_per_day == 2:
                 expected, completed, credited = _adherence_counts_for_date(phase, history, applications, applications_by_date, date_value)
             else:
@@ -238,6 +239,8 @@ def calculate_episode_adherence(
                 else:
                     expected = 0
                     credited = 0
+            if date_value < range_start:
+                continue
             rows.append(
                 CalculatedAdherenceDay(
                     account_id=episode.account_id,

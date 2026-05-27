@@ -7,32 +7,44 @@
     <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
   </head>
   <body class="theme-{{ theme }}">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">Zema</p>
-      </div>
-      <div class="topbar-actions">
-        <form method="post" action="/dashboard/theme">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          {% if theme == "dark" %}
-            <input type="hidden" name="theme" value="light">
-            <button class="icon-button" type="submit" aria-label="Switch to light mode"><span aria-hidden="true">☀️</span></button>
-          {% else %}
-            <input type="hidden" name="theme" value="dark">
-            <button class="icon-button" type="submit" aria-label="Switch to dark mode"><span aria-hidden="true">🌙</span></button>
-          {% endif %}
-        </form>
-        <form method="post" action="/dashboard/logout">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="secondary-button" type="submit">Log out</button>
-        </form>
+    <header class="topbar-shell">
+      <div class="topbar">
+        <a href="/dashboard" class="brand-link" aria-label="Open overview">Zema</a>
+        <nav class="topbar-nav" aria-label="Dashboard navigation">
+          <a href="/dashboard" class="{% if active_tab == 'overview' %}active{% endif %}" aria-current="{% if active_tab == 'overview' %}page{% else %}false{% endif %}">Overview</a>
+          <a href="/dashboard?tab=settings" class="{% if active_tab == 'settings' %}active{% endif %}" aria-current="{% if active_tab == 'settings' %}page{% else %}false{% endif %}">Settings</a>
+        </nav>
+        <div class="topbar-actions">
+          <form method="post" action="/dashboard/treatments/undo-last">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="icon-button" type="submit" aria-label="Undo last action"><span aria-hidden="true">↻</span></button>
+          </form>
+          <form method="post" action="/dashboard/theme">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% if theme == "dark" %}
+              <input type="hidden" name="theme" value="light">
+              <button class="icon-button" type="submit" aria-label="Switch to light mode"><span aria-hidden="true">☀️</span></button>
+            {% else %}
+              <input type="hidden" name="theme" value="dark">
+              <button class="icon-button" type="submit" aria-label="Switch to dark mode"><span aria-hidden="true">🌙</span></button>
+            {% endif %}
+          </form>
+          <form method="post" action="/dashboard/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="secondary-button" type="submit">Log out</button>
+          </form>
+        </div>
       </div>
     </header>
 
-    <main class="page">
+    <main class="page" id="top">
       {% if error %}
         <p class="form-error">{{ error }}</p>
       {% endif %}
+      {% if success_message %}
+        <p class="form-success">{{ success_message }}</p>
+      {% endif %}
+      {% if active_tab == 'overview' %}
       <section class="hero-card {% if overview.all_clear %}hero-clear{% else %}hero-due{% endif %}">
         <div>
           <p class="eyebrow">Today</p>
@@ -52,48 +64,54 @@
       </section>
 
       <section class="section-grid due-grid" aria-labelledby="due-title">
-        <div class="section-heading">
-          <p class="eyebrow">Next Actions</p>
-          <h2 id="due-title">Due Now</h2>
+        <div class="section-heading section-heading-row">
+          <div>
+            <p class="eyebrow">Next Actions</p>
+            <h2 id="due-title">Due Now</h2>
+          </div>
+          {% if overview.due %}
+            <form method="post" action="/dashboard/treatments/all-due">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit">Log all locations</button>
+            </form>
+          {% endif %}
         </div>
         {% if overview.due %}
           {% for item in overview.due %}
             <article class="card action-card">
               <div class="location-row">
                 {% if item.image_url %}
-                  <img src="{{ item.image_url }}" alt="" class="location-image">
+                  <button type="button" class="image-popup-trigger" data-image-url="{{ item.image_url }}" data-image-title="{{ item.location_name }}" aria-label="Open image for {{ item.location_name }}">
+                    <img src="{{ item.image_url }}" alt="" class="location-image">
+                  </button>
                 {% else %}
                   <div class="location-initial">{{ item.location_name[:1] }}</div>
                 {% endif %}
                 <div>
                   <h3>{{ item.location_name }}</h3>
-                  <p>{{ item.subject_name }} · Phase {{ item.phase_number }}</p>
+                  <p>Phase {{ item.phase_number }}{% if item.phase_number == 1 and item.due_slot %} · {{ item.due_slot }} slot{% endif %}</p>
                 </div>
               </div>
-              <dl class="compact-metrics">
-                <div>
-                  <dt>Slot</dt>
-                  <dd>{{ item.due_slot or "Today" }}</dd>
-                </div>
-                <div>
-                  <dt>Last</dt>
-                  <dd>{{ item.last_application_at|zdt }}</dd>
-                </div>
-              </dl>
-              <form method="post" action="/dashboard/treatments" class="treatment-form">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <input type="hidden" name="episode_id" value="{{ item.episode_id }}">
-                <input type="hidden" name="treatment_type" value="steroid">
-                <label>
-                  <span>Treatment</span>
-                  <input name="treatment_name" placeholder="Name">
-                </label>
-                <label>
-                  <span>Amount</span>
-                  <input name="quantity_text" placeholder="Thin layer">
-                </label>
-                <button type="submit">Log treatment</button>
-              </form>
+              <div class="action-buttons">
+                <form method="post" action="/dashboard/treatments" class="treatment-form">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="episode_id" value="{{ item.episode_id }}">
+                  <input type="hidden" name="treatment_type" value="steroid">
+                  <button type="submit">Log</button>
+                </form>
+                {% if item.phase_number != 1 %}
+                  <form method="post" action="/dashboard/episodes/{{ item.episode_id }}/relapse" class="treatment-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="secondary-button" type="submit">Relapsed</button>
+                  </form>
+                {% endif %}
+                {% if item.phase_number == 1 %}
+                  <form method="post" action="/dashboard/episodes/{{ item.episode_id }}/heal" class="treatment-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="success-button" type="submit">Healed</button>
+                  </form>
+                {% endif %}
+              </div>
             </article>
           {% endfor %}
         {% else %}
@@ -113,13 +131,22 @@
           {% if overview.upcoming %}
             {% for item in overview.upcoming[:8] %}
               <article class="list-row">
-                <div>
-                  <h3>{{ item.location_name }}</h3>
-                  <p>{{ item.subject_name }} · Phase {{ item.phase_number }} · {{ item.status.replace("_", " ") }}</p>
+                <div class="location-row list-location-row">
+                  {% if item.image_url %}
+                    <button type="button" class="image-popup-trigger" data-image-url="{{ item.image_url }}" data-image-title="{{ item.location_name }}" aria-label="Open image for {{ item.location_name }}">
+                      <img src="{{ item.image_url }}" alt="" class="location-image thumbnail-image">
+                    </button>
+                  {% else %}
+                    <div class="location-initial thumbnail-image">{{ item.location_name[:1] }}</div>
+                  {% endif %}
+                  <div>
+                    <h3>{{ item.location_name }}</h3>
+                    <p>Phase {{ item.phase_number }}</p>
+                  </div>
                 </div>
                 <div class="row-meta">
-                  <span>Next {{ item.next_due_at|zdt }}</span>
-                  <small>Last {{ item.last_application_at|zdt }}</small>
+                  <span>Next {{ item.next_due_at|zdate }}{% if item.next_due_slot %}, {{ item.next_due_slot }}{% endif %}</span>
+                  <small>Last {{ item.last_application_at|zdate }}{% if item.last_application_slot %}, {{ item.last_application_slot }}{% endif %}</small>
                 </div>
               </article>
             {% endfor %}
@@ -146,21 +173,25 @@
           </div>
         </div>
 
-        <div class="section-grid" aria-labelledby="adherence-title">
+        <div class="section-grid" id="adherence" aria-labelledby="adherence-title">
           <div class="section-heading">
             <p class="eyebrow">Rhythm</p>
             <h2 id="adherence-title">Adherence</h2>
           </div>
           <div class="card adherence-card">
-            <form method="get" action="/dashboard" class="range-form" aria-label="Adherence range">
-              <label><input type="radio" name="adherence_range" value="week"{% if overview.adherence_range.key == "week" %} checked{% endif %}> Last week</label>
-              <label><input type="radio" name="adherence_range" value="month"{% if overview.adherence_range.key == "month" %} checked{% endif %}> Last month</label>
-              <label><input type="radio" name="adherence_range" value="year"{% if overview.adherence_range.key == "year" %} checked{% endif %}> Last year</label>
-              <label><input type="radio" name="adherence_range" value="all"{% if overview.adherence_range.key == "all" %} checked{% endif %}> All time</label>
-              <label><input type="radio" name="adherence_range" value="custom"{% if overview.adherence_range.key == "custom" %} checked{% endif %}> Custom</label>
-              <label><span>From</span><input type="date" name="from_date" value="{{ overview.adherence_range.from_date.isoformat() }}"></label>
-              <label><span>To</span><input type="date" name="to_date" value="{{ overview.adherence_range.to_date.isoformat() }}"></label>
-              <button class="secondary-button compact-button" type="submit">Apply</button>
+            <form method="get" action="/dashboard#adherence" class="range-form" aria-label="Adherence range">
+              <div class="preset-range-controls" aria-label="Preset adherence ranges">
+                <label><input type="radio" name="adherence_range" value="week" onchange="this.form.submit()"{% if overview.adherence_range.key == "week" %} checked{% endif %}> Last week</label>
+                <label><input type="radio" name="adherence_range" value="month" onchange="this.form.submit()"{% if overview.adherence_range.key == "month" %} checked{% endif %}> Last month</label>
+                <label><input type="radio" name="adherence_range" value="year" onchange="this.form.submit()"{% if overview.adherence_range.key == "year" %} checked{% endif %}> Last year</label>
+                <label><input type="radio" name="adherence_range" value="all" onchange="this.form.submit()"{% if overview.adherence_range.key == "all" %} checked{% endif %}> All time</label>
+              </div>
+              <div class="custom-range-controls">
+                <label class="custom-radio"><input type="radio" name="adherence_range" value="custom"{% if overview.adherence_range.key == "custom" %} checked{% endif %}> Custom</label>
+                <label><span>From</span><input type="date" name="from_date" value="{{ overview.adherence_range.from_date.isoformat() }}"></label>
+                <label><span>To</span><input type="date" name="to_date" value="{{ overview.adherence_range.to_date.isoformat() }}"></label>
+                <button class="secondary-button compact-button" type="submit">Apply</button>
+              </div>
             </form>
             {% for item in overview.adherence %}
               <div class="adherence-row">
@@ -171,7 +202,7 @@
                 <strong>{% if item.score is none %}--{% else %}{{ "%.0f"|format(item.score * 100) }}%{% endif %}</strong>
               </div>
               {% if item.habit_chain %}
-                <div class="habit-chain" role="list" aria-label="{{ item.label }} adherence chain">
+                <div class="habit-chain" role="list" aria-label="{{ item.label }} adherence chain" data-range-days="{{ item.day_count }}">
                   {% for day in item.habit_chain %}
                     <span
                       role="listitem"
@@ -182,80 +213,142 @@
                     ></span>
                   {% endfor %}
                 </div>
+                <div class="habit-reference" aria-label="{{ item.label }} reference points">
+                  <span>Start {{ item.from_date|zdate }}</span>
+                  <span>Today {{ item.to_date|zdate }}</span>
+                </div>
               {% endif %}
             {% endfor %}
           </div>
         </div>
       </section>
 
-      <section class="management-grid" aria-labelledby="management-title">
+      {% else %}
+      <section id="settings" class="section-grid settings-section" aria-labelledby="settings-title">
         <div class="section-heading">
-          <p class="eyebrow">Manage</p>
-          <h2 id="management-title">Subjects & Locations</h2>
+          <p class="eyebrow">Settings</p>
+          <h2 id="settings-title">Account & Tracking Setup</h2>
         </div>
 
-        <article class="card management-card">
-          <h3>Subjects</h3>
-          {% for subject in overview.subjects %}
-            <form method="post" action="/dashboard/subjects/{{ subject.id }}" class="inline-form">
+        <nav class="settings-tabs" aria-label="Settings sections">
+          <a href="/dashboard?tab=settings&settings_tab=account" class="{% if active_settings_tab == 'account' %}active{% endif %}" aria-current="{% if active_settings_tab == 'account' %}page{% else %}false{% endif %}">Account</a>
+          <a href="/dashboard?tab=settings&settings_tab=subject" class="{% if active_settings_tab == 'subject' %}active{% endif %}" aria-current="{% if active_settings_tab == 'subject' %}page{% else %}false{% endif %}">Subject</a>
+          <a href="/dashboard?tab=settings&settings_tab=add-location" class="{% if active_settings_tab == 'add-location' %}active{% endif %}" aria-current="{% if active_settings_tab == 'add-location' %}page{% else %}false{% endif %}">Add Location</a>
+          <a href="/dashboard?tab=settings&settings_tab=edit-locations" class="{% if active_settings_tab == 'edit-locations' %}active{% endif %}" aria-current="{% if active_settings_tab == 'edit-locations' %}page{% else %}false{% endif %}">Edit Locations</a>
+        </nav>
+
+        <article class="card management-card settings-card">
+          {% if active_settings_tab == 'account' %}
+          <section class="settings-panel" aria-labelledby="account-settings-title">
+            <h3 id="account-settings-title">Account</h3>
+            <form method="post" action="/dashboard/account" class="stack-form settings-form">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <label>
-                <span>Display name</span>
-                <input name="display_name" value="{{ subject.display_name }}" required>
-              </label>
-              <button class="secondary-button compact-button" type="submit">Save</button>
+              <label><span>Username</span><input name="username" value="{{ account.username }}" required></label>
+              <label><span>Current password</span><input name="current_password" type="password" autocomplete="current-password" required></label>
+              <div class="form-pair">
+                <label><span>New password</span><input name="new_password" type="password" autocomplete="new-password"></label>
+                <label><span>Confirm new password</span><input name="confirm_password" type="password" autocomplete="new-password"></label>
+              </div>
+              <button type="submit">Update account</button>
             </form>
-          {% endfor %}
-        </article>
+          </section>
+          {% elif active_settings_tab == 'subject' %}
 
-        <article class="card management-card">
-          <h3>Add location</h3>
-          <form method="post" action="/dashboard/locations" class="stack-form" enctype="multipart/form-data">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label><span>Code</span><input name="code" placeholder="left_elbow" required></label>
-            <label><span>Display name</span><input name="display_name" placeholder="Left elbow" required></label>
-            <label><span>Image</span><input name="image" type="file" accept="image/png,image/jpeg,image/webp"></label>
-            <button type="submit">Add location</button>
-          </form>
-        </article>
-
-        <article class="card management-card location-management-card">
-          <h3>Locations</h3>
-          {% for location in overview.locations %}
-            <div class="location-edit-row">
-              <form method="post" action="/dashboard/locations/{{ location.id }}" class="inline-form">
+          <section class="settings-panel" aria-labelledby="subject-settings-title">
+            <h3 id="subject-settings-title">Subject</h3>
+            {% for subject in overview.subjects %}
+              <form method="post" action="/dashboard/subjects/{{ subject.id }}" class="inline-form settings-form">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <label>
-                  <span>{{ location.code }}</span>
-                  <input name="display_name" value="{{ location.display_name }}" required>
+                  <span>Display name</span>
+                  <input name="display_name" value="{{ subject.display_name }}" required>
                 </label>
                 <button class="secondary-button compact-button" type="submit">Save</button>
               </form>
-              <form method="post" action="/dashboard/locations/{{ location.id }}/image" class="inline-form" enctype="multipart/form-data">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <label>
-                  <span>{% if location.image_storage_key %}Replace image{% else %}Upload image{% endif %}</span>
-                  <input name="image" type="file" accept="image/png,image/jpeg,image/webp" required>
-                </label>
-                <button class="secondary-button compact-button" type="submit">Upload</button>
-              </form>
+            {% endfor %}
+          </section>
+          {% elif active_settings_tab == 'add-location' %}
+
+          <section class="settings-panel" aria-labelledby="add-location-settings-title">
+            <h3 id="add-location-settings-title">Add Location</h3>
+            <form method="post" action="/dashboard/locations" class="stack-form settings-form" enctype="multipart/form-data">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <label><span>Display name</span><input name="display_name" placeholder="Left elbow" required></label>
+              <label><span>Image</span><input name="image" type="file" accept="image/png,image/jpeg,image/webp"></label>
+              <button type="submit">Add location</button>
+            </form>
+          </section>
+          {% else %}
+
+          <section class="settings-panel" aria-labelledby="edit-locations-settings-title">
+            <h3 id="edit-locations-settings-title">Edit Locations</h3>
+            <div class="location-management-list">
+              {% for location in overview.locations %}
+                <div class="location-edit-row">
+                  <div class="location-row">
+                    {% if location.image_url %}
+                      <button type="button" class="image-popup-trigger" data-image-url="{{ location.image_url }}" data-image-title="{{ location.display_name }}" aria-label="Open image for {{ location.display_name }}">
+                        <img src="{{ location.image_url }}" alt="" class="location-image thumbnail-image">
+                      </button>
+                    {% else %}
+                      <div class="location-initial thumbnail-image">{{ location.display_name[:1] }}</div>
+                    {% endif %}
+                    <div>
+                      <h3>{{ location.display_name }}</h3>
+                    </div>
+                  </div>
+                  <form method="post" action="/dashboard/locations/{{ location.id }}" class="inline-form settings-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <label>
+                      <span>Display name</span>
+                      <input name="display_name" value="{{ location.display_name }}" required>
+                    </label>
+                    <button class="secondary-button compact-button" type="submit">Save</button>
+                  </form>
+                  <form method="post" action="/dashboard/locations/{{ location.id }}/image" class="inline-form settings-form" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <label>
+                      <span>{% if location.image_url %}Replace image{% else %}Upload image{% endif %}</span>
+                      <input name="image" type="file" accept="image/png,image/jpeg,image/webp" required>
+                    </label>
+                    <button class="secondary-button compact-button" type="submit">Upload</button>
+                  </form>
+                  <form method="post" action="/dashboard/locations/{{ location.id }}/delete" class="delete-location-form settings-form" onsubmit="return confirm('Delete this location and its tracking history?');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="danger-button compact-button" type="submit">Delete</button>
+                  </form>
+                </div>
+              {% endfor %}
             </div>
-          {% endfor %}
+          </section>
+          {% endif %}
         </article>
       </section>
+      {% endif %}
 
-      <section class="card trust-card" aria-labelledby="trust-title">
-        <div>
-          <p class="eyebrow">System Trust</p>
-          <h2 id="trust-title">Schedule state is current</h2>
-          {% if overview.phase_catch_up %}
-            <p>Last schedule reconciliation ran {{ overview.phase_catch_up.ran_at }} with {{ overview.phase_catch_up.changed_count }} changed episode{% if overview.phase_catch_up.changed_count != 1 %}s{% endif %}.</p>
-          {% else %}
-            <p>The dashboard recalculates treatment timing before rendering this page.</p>
-          {% endif %}
-        </div>
-        <p class="muted">Generated {{ overview.generated_at|zdt }}</p>
-      </section>
+      <dialog class="image-dialog" id="image-dialog" aria-label="Location image preview">
+        <form method="dialog">
+          <button type="submit" class="dialog-close" aria-label="Close image preview">Close</button>
+        </form>
+        <img src="" alt="" id="image-dialog-img">
+        <p id="image-dialog-title"></p>
+      </dialog>
     </main>
+    <script>
+      const dialog = document.getElementById("image-dialog");
+      const dialogImage = document.getElementById("image-dialog-img");
+      const dialogTitle = document.getElementById("image-dialog-title");
+      document.querySelectorAll(".image-popup-trigger").forEach((trigger) => {
+        trigger.addEventListener("click", () => {
+          dialogImage.src = trigger.dataset.imageUrl;
+          dialogImage.alt = trigger.dataset.imageTitle || "Location image";
+          dialogTitle.textContent = trigger.dataset.imageTitle || "";
+          dialog.showModal();
+        });
+      });
+      dialog.addEventListener("close", () => {
+        dialogImage.removeAttribute("src");
+      });
+    </script>
   </body>
 </html>

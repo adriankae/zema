@@ -115,6 +115,31 @@ def issue_login_token(account: Account) -> str:
     return create_access_token(subject=str(account.id), account_id=account.id)
 
 
+def update_account_credentials(
+    db: Session,
+    account: Account,
+    username: str,
+    current_password: str,
+    new_password: str | None = None,
+) -> Account:
+    cleaned_username = username.strip()
+    if not cleaned_username:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="username required")
+    if not current_password or not verify_password(current_password, account.password_hash):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="current password invalid")
+    account.username = cleaned_username
+    if new_password:
+        account.password_hash = hash_password(new_password)
+    db.add(account)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="username already exists") from exc
+    db.refresh(account)
+    return account
+
+
 def create_api_key(db: Session, account: Account, name: str) -> tuple[AccountApiKey, str]:
     plaintext = generate_api_key()
     key = AccountApiKey(account_id=account.id, name=name, key_hash=hash_api_key(plaintext), is_active=True)
@@ -224,6 +249,48 @@ def get_location(db: Session, account: Account, location_id: int) -> BodyLocatio
     location = db.get(BodyLocation, location_id)
     if location is None or location.account_id != account.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="location not found")
+    return location
+
+
+def delete_location(db: Session, account: Account, location_id: int) -> BodyLocation:
+    location = get_location(db, account, location_id)
+    episode_ids = list(
+        db.execute(
+            select(EczemaEpisode.id).where(EczemaEpisode.account_id == account.id, EczemaEpisode.location_id == location.id)
+        ).scalars()
+    )
+    try:
+        if episode_ids:
+            db.execute(
+                delete(EpisodeDailyAdherence).where(
+                    EpisodeDailyAdherence.account_id == account.id,
+                    or_(
+                        EpisodeDailyAdherence.location_id == location.id,
+                        EpisodeDailyAdherence.episode_id.in_(episode_ids),
+                    ),
+                )
+            )
+            db.execute(delete(TreatmentApplication).where(TreatmentApplication.episode_id.in_(episode_ids)))
+            db.execute(delete(EpisodePhaseHistory).where(EpisodePhaseHistory.episode_id.in_(episode_ids)))
+            db.execute(delete(EpisodeEvent).where(EpisodeEvent.episode_id.in_(episode_ids)))
+            db.execute(
+                delete(EczemaEpisode).where(
+                    EczemaEpisode.account_id == account.id,
+                    EczemaEpisode.location_id == location.id,
+                )
+            )
+        else:
+            db.execute(
+                delete(EpisodeDailyAdherence).where(
+                    EpisodeDailyAdherence.account_id == account.id,
+                    EpisodeDailyAdherence.location_id == location.id,
+                )
+            )
+        db.delete(location)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return location
 
 

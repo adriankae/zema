@@ -4,8 +4,9 @@ from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 
 from app.core.database import SessionLocal
+from app.core.security import verify_password
 from app.core.time import utc_now
-from app.models import BodyLocation, Subject, TreatmentApplication
+from app.models import Account, BodyLocation, EczemaEpisode, EpisodeEvent, EpisodePhaseHistory, Subject, TreatmentApplication
 from app.services import create_episode, create_location, create_subject, heal_episode, log_application
 
 
@@ -165,7 +166,12 @@ def test_good_login_sets_secure_browser_session_cookie(client):
     assert "Path=/dashboard" in cookie
 
 
-def test_authenticated_dashboard_renders_all_clear_overview(client):
+def test_authenticated_dashboard_renders_all_clear_overview(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
     _create_taper_episode(location_code="forearm", location_name="Forearm")
     _login(client)
 
@@ -257,6 +263,148 @@ def test_treatment_post_with_valid_csrf_uses_domain_logging(client):
         db.close()
 
 
+def test_log_all_due_locations_logs_current_due_items(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.dashboard.routes as dashboard_routes
+    import app.services as services
+
+    now = datetime(2026, 5, 27, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(dashboard_routes, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    first_id = _create_taper_episode(location_code="bulk_one", location_name="Bulk one")
+    second_id = _create_taper_episode(location_code="bulk_two", location_name="Bulk two")
+    _login(client)
+    dashboard = client.get("/dashboard")
+    token = _csrf_token(dashboard.text)
+
+    response = client.post("/dashboard/treatments/all-due", data={"csrf_token": token}, follow_redirects=False)
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(TreatmentApplication)
+            .filter(TreatmentApplication.episode_id.in_([first_id, second_id]))
+            .order_by(TreatmentApplication.episode_id.asc(), TreatmentApplication.applied_at.asc())
+            .all()
+        )
+        logged_by_episode = {row.episode_id: [] for row in rows}
+        for row in rows:
+            logged_by_episode[row.episode_id].append(row)
+        assert len(logged_by_episode[first_id]) == 2
+        assert len(logged_by_episode[second_id]) == 2
+        assert logged_by_episode[first_id][-1].applied_at.replace(tzinfo=timezone.utc) == now
+        assert logged_by_episode[second_id][-1].applied_at.replace(tzinfo=timezone.utc) == now
+    finally:
+        db.close()
+
+
+def test_undo_last_treatment_log_deletes_last_log_batch(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.dashboard.routes as dashboard_routes
+    import app.services as services
+
+    now = datetime(2026, 5, 27, 12, tzinfo=timezone.utc)
+    undo_now = datetime(2026, 5, 27, 12, 5, tzinfo=timezone.utc)
+    current_now = now
+
+    def fake_now():
+        return current_now
+
+    monkeypatch.setattr(dashboard_routes, "utc_now", fake_now)
+    monkeypatch.setattr(services, "utc_now", fake_now)
+    monkeypatch.setattr(read_model, "utc_now", fake_now)
+    first_id = _create_taper_episode(location_code="undo_one", location_name="Undo one")
+    second_id = _create_taper_episode(location_code="undo_two", location_name="Undo two")
+    _login(client)
+    dashboard = client.get("/dashboard")
+    token = _csrf_token(dashboard.text)
+    logged = client.post("/dashboard/treatments/all-due", data={"csrf_token": token}, follow_redirects=False)
+    assert logged.status_code == 303
+
+    current_now = undo_now
+    undo_dashboard = client.get("/dashboard")
+    undo_token = _csrf_token(undo_dashboard.text)
+    undone = client.post("/dashboard/treatments/undo-last", data={"csrf_token": undo_token}, follow_redirects=False)
+
+    assert undone.status_code == 303
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(TreatmentApplication)
+            .filter(TreatmentApplication.episode_id.in_([first_id, second_id]))
+            .order_by(TreatmentApplication.episode_id.asc(), TreatmentApplication.applied_at.asc())
+            .all()
+        )
+        latest = [row for row in rows if row.applied_at.replace(tzinfo=timezone.utc) == now]
+        assert len(latest) == 2
+        assert all(row.is_deleted for row in latest)
+        assert all(row.deleted_at.replace(tzinfo=timezone.utc) == undo_now for row in latest)
+    finally:
+        db.close()
+    refreshed = client.get("/dashboard")
+    assert "Undo one" in refreshed.text
+    assert "Undo two" in refreshed.text
+
+
+def test_undo_ignores_newer_agent_logs_and_reverts_last_dashboard_action(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.dashboard.routes as dashboard_routes
+    import app.services as services
+
+    healed_at = datetime(2026, 5, 26, 12, tzinfo=timezone.utc)
+    agent_log_at = datetime(2026, 5, 27, 8, tzinfo=timezone.utc)
+    monkeypatch.setattr(dashboard_routes, "utc_now", lambda: healed_at)
+    monkeypatch.setattr(services, "utc_now", lambda: healed_at)
+    monkeypatch.setattr(read_model, "utc_now", lambda: healed_at)
+    phase_one_id = _create_phase_one_episode(location_code="undo_phase_action", location_name="Undo phase action")
+    agent_episode_id = _create_taper_episode(location_code="agent_log_latest", location_name="Agent log latest")
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        agent_application = log_application(db, account, agent_episode_id, agent_log_at, "steroid", None, None, None, "agent", "api-key:2")
+        agent_application_id = agent_application.id
+    finally:
+        db.close()
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard").text)
+    healed = client.post(f"/dashboard/episodes/{phase_one_id}/heal", data={"csrf_token": csrf}, follow_redirects=False)
+    assert healed.status_code == 303
+
+    undo_token = _csrf_token(client.get("/dashboard").text)
+    undo = client.post("/dashboard/treatments/undo-last", data={"csrf_token": undo_token}, follow_redirects=False)
+
+    assert undo.status_code == 303
+    db = SessionLocal()
+    try:
+        phase_one = db.get(EczemaEpisode, phase_one_id)
+        agent_application = db.get(TreatmentApplication, agent_application_id)
+        assert phase_one.status == "active_flare"
+        assert phase_one.current_phase_number == 1
+        assert agent_application.is_deleted is False
+    finally:
+        db.close()
+
+
+def test_due_header_renders_primary_log_all_button(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    _create_taper_episode(location_code="bulk_primary", location_name="Bulk primary")
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    due_block = response.text.split('id="due-title"', 1)[1].split("<article", 1)[0]
+    assert 'action="/dashboard/treatments/all-due"' in due_block
+    assert '<button type="submit">Log all locations</button>' in due_block
+    assert "secondary-button" not in due_block
+
+
 def test_upcoming_section_renders_active_and_tapering_non_due_episodes(client, monkeypatch):
     import app.dashboard.read_model as read_model
     import app.services as services
@@ -286,7 +434,7 @@ def test_upcoming_section_renders_active_and_tapering_non_due_episodes(client, m
     assert "Phase 2" in response.text
 
 
-def test_upcoming_times_are_rendered_in_deployment_timezone(client, monkeypatch):
+def test_upcoming_rows_show_dates_without_times_in_single_user_overview(client, monkeypatch):
     import app.dashboard.read_model as read_model
     import app.services as services
     from app.core.config import settings
@@ -300,8 +448,40 @@ def test_upcoming_times_are_rendered_in_deployment_timezone(client, monkeypatch)
     response = client.get("/dashboard")
 
     assert response.status_code == 200
-    assert "Next May 27, 00:00" in response.text
-    assert "Next May 26, 22:00" not in response.text
+    upcoming_block = response.text.split('id="upcoming-title"', 1)[1].split('class="two-column"', 1)[0]
+    assert "Berlin next" in upcoming_block
+    assert "Child Berlin next" not in upcoming_block
+    assert "Next May 27" in upcoming_block
+    assert "Last May 25" in upcoming_block
+    assert "Next May 27, 00:00" not in upcoming_block
+    assert "00:00" not in upcoming_block
+
+
+def test_phase_one_upcoming_rows_show_next_and_last_slots(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 27, 10, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 27, 10, tzinfo=timezone.utc))
+    episode_id = _create_phase_one_episode(location_code="right_foot_slot", location_name="Right foot slot")
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        log_application(db, account, episode_id, datetime(2026, 5, 27, 7, tzinfo=timezone.utc), "steroid", None, None, None, "user", f"user:{account.id}")
+    finally:
+        db.close()
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    upcoming_block = response.text.split('id="upcoming-title"', 1)[1].split('class="two-column"', 1)[0]
+    assert "Right foot slot" in upcoming_block
+    assert "Next May 27, evening" in upcoming_block
+    assert "Last May 27, morning" in upcoming_block
+    assert "14:00" not in upcoming_block
 
 
 def test_dashboard_adherence_uses_rolling_taper_schedule_and_renders_habit_chain(client, monkeypatch):
@@ -334,7 +514,43 @@ def test_dashboard_adherence_uses_rolling_taper_schedule_and_renders_habit_chain
     assert "100%" in response.text
     assert 'class="habit-chain"' in response.text
     assert 'data-date="2026-05-26"' in response.text
+    assert 'title="May 26' in response.text
+    assert "not due" in response.text
     assert 'data-status="missed"' not in response.text
+
+
+def test_dashboard_adherence_anchor_tooltips_and_not_due_green(client, monkeypatch):
+    import app.adherence as adherence
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    _create_taper_episode(
+        location_code="week_stable",
+        location_name="Week stable",
+        healed_at=datetime(2026, 5, 20, 8, tzinfo=timezone.utc),
+    )
+    _login(client)
+
+    response = client.get("/dashboard?adherence_range=week")
+    css = client.get("/dashboard/assets/dashboard.css")
+
+    assert response.status_code == 200
+    assert 'id="adherence"' in response.text
+    assert 'action="/dashboard#adherence"' in response.text
+    assert 'data-date="2026-05-26"' in response.text
+    assert 'data-status="not_due"' in response.text
+    assert 'title="May 26' in response.text
+    assert "not due" in response.text
+    assert 'data-date="2026-05-27"' in response.text
+    assert 'data-status="due"' in response.text
+    assert 'title="May 27' in response.text
+    assert "due" in response.text
+    assert ".habit-not_due" in css.text
+    assert ".habit-due" in css.text
+    assert "#34c759" in css.text
 
 
 def test_dashboard_defaults_to_dark_theme_and_exposes_theme_toggle(client):
@@ -363,6 +579,36 @@ def test_dashboard_theme_toggle_sets_cookie(client):
     assert "Path=/dashboard" in cookie
 
 
+def test_dashboard_topbar_is_fixed_and_contains_session_actions(client):
+    _login(client)
+
+    response = client.get("/dashboard")
+    css = client.get("/dashboard/assets/dashboard.css")
+
+    assert response.status_code == 200
+    assert 'class="topbar-shell"' in response.text
+    assert 'class="topbar-actions"' in response.text
+    assert 'href="/dashboard?tab=settings"' in response.text
+    assert 'aria-label="Undo last action"' in response.text
+    assert "↻" in response.text
+    assert 'aria-label="Switch to light mode"' in response.text
+    assert "Log out" in response.text
+    assert "position: sticky" in css.text
+    assert "z-index" in css.text
+
+
+def test_adherence_card_height_is_stable_across_timeframes(client):
+    _login(client)
+
+    css = client.get("/dashboard/assets/dashboard.css")
+
+    assert css.status_code == 200
+    assert "align-items: start" in css.text
+    assert "height: 190px" in css.text
+    assert "overflow-y: auto" in css.text
+    assert "padding: 2px 2px 10px" in css.text
+
+
 def test_adherence_range_controls_render_and_select_last_month_by_default(client):
     _create_taper_episode(location_code="range_default", location_name="Range default")
     _login(client)
@@ -372,12 +618,54 @@ def test_adherence_range_controls_render_and_select_last_month_by_default(client
     assert response.status_code == 200
     assert 'name="adherence_range"' in response.text
     assert 'value="week"' in response.text
-    assert 'value="month" checked' in response.text
+    assert 'value="month" onchange="this.form.submit()"' in response.text
+    assert 'value="month" onchange="this.form.submit()" checked' in response.text
     assert 'value="year"' in response.text
     assert 'value="all"' in response.text
     assert 'name="from_date"' in response.text
     assert 'name="to_date"' in response.text
     assert "Last month" in response.text
+    assert "System Trust" not in response.text
+    assert "Generated " not in response.text
+
+
+def test_preset_adherence_ranges_auto_apply_and_custom_apply_is_grouped(client):
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert 'value="week" onchange="this.form.submit()"' in response.text
+    assert 'value="month" onchange="this.form.submit()"' in response.text
+    assert 'value="year" onchange="this.form.submit()"' in response.text
+    assert 'value="all" onchange="this.form.submit()"' in response.text
+    assert 'class="custom-range-controls"' in response.text
+    custom_block = response.text.split('class="custom-range-controls"', 1)[1].split("</div>", 1)[0]
+    assert 'name="from_date"' in custom_block
+    assert 'name="to_date"' in custom_block
+    assert ">Apply<" in custom_block
+
+
+def test_year_adherence_range_renders_reference_points(client, monkeypatch):
+    import app.adherence as adherence
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    _create_taper_episode(location_code="year_reference", location_name="Year reference")
+    _login(client)
+
+    response = client.get("/dashboard?adherence_range=year")
+
+    assert response.status_code == 200
+    assert 'class="habit-reference"' in response.text
+    assert "May 27" in response.text
+    assert "Today" in response.text
+    assert 'data-range-days="365"' in response.text
+    assert 'data-date="2025-05-27"' in response.text
+    assert 'data-status="pre_start"' in response.text
 
 
 def test_custom_adherence_range_uses_requested_dates(client, monkeypatch):
@@ -430,7 +718,7 @@ def test_dashboard_subject_rename_updates_display_name(client):
         assert db.get(Subject, subject_id).display_name == "Updated subject"
     finally:
         db.close()
-    updated = client.get("/dashboard")
+    updated = client.get("/dashboard?tab=settings&settings_tab=subject")
     assert "Updated subject" in updated.text
 
 
@@ -464,6 +752,352 @@ def test_dashboard_location_rename_updates_display_name(client):
     assert "Old location" not in updated.text
 
 
+def test_dashboard_edit_locations_can_delete_location_and_tracking_history(client):
+    episode_id = _create_taper_episode(location_code="delete_location", location_name="Delete location")
+    db = SessionLocal()
+    try:
+        episode = db.get(EczemaEpisode, episode_id)
+        location_id = episode.location_id
+        assert db.query(TreatmentApplication).filter(TreatmentApplication.episode_id == episode_id).count() > 0
+    finally:
+        db.close()
+    _login(client)
+    edit_page = client.get("/dashboard?tab=settings&settings_tab=edit-locations")
+    csrf = _csrf_token(edit_page.text)
+
+    assert f'action="/dashboard/locations/{location_id}/delete"' in edit_page.text
+    assert "danger-button compact-button" in edit_page.text
+
+    response = client.post(
+        f"/dashboard/locations/{location_id}/delete",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/dashboard?tab=settings&settings_tab=edit-locations"
+    db = SessionLocal()
+    try:
+        assert db.get(BodyLocation, location_id) is None
+        assert db.get(EczemaEpisode, episode_id) is None
+        assert db.query(TreatmentApplication).filter(TreatmentApplication.episode_id == episode_id).count() == 0
+        assert db.query(EpisodePhaseHistory).filter(EpisodePhaseHistory.episode_id == episode_id).count() == 0
+        assert db.query(EpisodeEvent).filter(EpisodeEvent.episode_id == episode_id).count() == 0
+    finally:
+        db.close()
+    updated = client.get("/dashboard")
+    assert "Delete location" not in updated.text
+
+
+def test_edit_location_delete_button_is_aligned_with_row_actions(client):
+    _create_taper_episode(location_code="aligned_delete", location_name="Aligned delete")
+    _login(client)
+
+    response = client.get("/dashboard?tab=settings&settings_tab=edit-locations")
+    css = client.get("/dashboard/assets/dashboard.css")
+
+    assert response.status_code == 200
+    assert 'class="delete-location-form settings-form"' in response.text
+    assert ".location-edit-row .settings-form" in css.text
+    assert "align-self: end" in css.text
+    assert "display: flex" in css.text
+
+
+def test_missing_location_image_file_uses_initial_fallback(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    episode_id = _create_taper_episode(location_code="missing_image", location_name="Missing image")
+    db = SessionLocal()
+    try:
+        from app.models import EczemaEpisode
+
+        location = db.get(BodyLocation, db.get(EczemaEpisode, episode_id).location_id)
+        location.image_storage_key = "definitely-missing-image-file.jpg"
+        location.image_mime_type = "image/jpeg"
+        db.add(location)
+        db.commit()
+    finally:
+        db.close()
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "Missing image" in response.text
+    assert "definitely-missing-image-file.jpg" not in response.text
+    assert 'aria-label="Open image for Missing image"' not in response.text
+
+
+def test_upcoming_rows_show_location_image_thumbnail(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 12, tzinfo=timezone.utc))
+    episode_id = _create_taper_episode(location_code="ear_left", location_name="Gehörgang links")
+    db = SessionLocal()
+    try:
+        from app.models import EczemaEpisode
+
+        location_id = db.get(EczemaEpisode, episode_id).location_id
+    finally:
+        db.close()
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard").text)
+    upload = client.post(
+        f"/dashboard/locations/{location_id}/image",
+        data={"csrf_token": csrf},
+        files={"image": ("ear.png", PNG_BYTES, "image/png")},
+        follow_redirects=False,
+    )
+    assert upload.status_code == 303
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "Gehörgang links" in response.text
+    assert f'data-image-url="/dashboard/locations/{location_id}/image"' in response.text
+    assert f'src="/dashboard/locations/{location_id}/image"' in response.text
+    assert 'class="location-image thumbnail-image"' in response.text
+    assert 'id="image-dialog"' in response.text
+
+
+def test_due_cards_show_only_location_thumbnail_phase_and_phase_one_slot(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 16, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 16, tzinfo=timezone.utc))
+    episode_id = _create_phase_one_episode(location_code="due_minimal", location_name="Due minimal")
+    db = SessionLocal()
+    try:
+        from app.models import EczemaEpisode
+
+        location_id = db.get(EczemaEpisode, episode_id).location_id
+    finally:
+        db.close()
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard?tab=settings").text)
+    upload = client.post(
+        f"/dashboard/locations/{location_id}/image",
+        data={"csrf_token": csrf},
+        files={"image": ("due.png", PNG_BYTES, "image/png")},
+        follow_redirects=False,
+    )
+    assert upload.status_code == 303
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "Due minimal" in response.text
+    assert "Phase 1 · evening slot" in response.text
+    assert "Child due_minimal" not in response.text
+    assert 'name="treatment_name"' not in response.text
+    assert 'name="quantity_text"' not in response.text
+    assert ">Log<" in response.text
+    assert "Log treatment" not in response.text
+    assert "Healed" in response.text
+    assert "success-button" in response.text
+    assert f'data-image-url="/dashboard/locations/{location_id}/image"' in response.text
+
+
+def test_non_phase_one_due_card_hides_slot(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    _create_taper_episode(location_code="phase_two_due", location_name="Phase two due")
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "Phase two due" in response.text
+    assert "Phase 2 ·" not in response.text
+    assert "Relapsed" in response.text
+    assert "Relapses" not in response.text
+
+
+def test_dashboard_due_card_healed_button_moves_phase_one_to_taper(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.dashboard.routes as dashboard_routes
+    import app.services as services
+
+    now = datetime(2026, 5, 26, 16, tzinfo=timezone.utc)
+    monkeypatch.setattr(dashboard_routes, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    episode_id = _create_phase_one_episode(location_code="dashboard_healed", location_name="Dashboard healed")
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard").text)
+
+    response = client.post(f"/dashboard/episodes/{episode_id}/heal", data={"csrf_token": csrf}, follow_redirects=False)
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        episode = db.get(EczemaEpisode, episode_id)
+        assert episode.status == "in_taper"
+        assert episode.current_phase_number == 2
+    finally:
+        db.close()
+    undo_token = _csrf_token(client.get("/dashboard").text)
+    undo = client.post("/dashboard/treatments/undo-last", data={"csrf_token": undo_token}, follow_redirects=False)
+    assert undo.status_code == 303
+    db = SessionLocal()
+    try:
+        episode = db.get(EczemaEpisode, episode_id)
+        assert episode.status == "active_flare"
+        assert episode.current_phase_number == 1
+        assert episode.healed_at is None
+    finally:
+        db.close()
+
+
+def test_dashboard_due_card_relapse_button_moves_taper_to_phase_one(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.dashboard.routes as dashboard_routes
+    import app.services as services
+
+    now = datetime(2026, 5, 27, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(dashboard_routes, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    episode_id = _create_taper_episode(location_code="dashboard_relapse", location_name="Dashboard relapse")
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard").text)
+
+    response = client.post(f"/dashboard/episodes/{episode_id}/relapse", data={"csrf_token": csrf}, follow_redirects=False)
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        episode = db.get(EczemaEpisode, episode_id)
+        assert episode.status == "active_flare"
+        assert episode.current_phase_number == 1
+        assert episode.healed_at is None
+    finally:
+        db.close()
+    undo_token = _csrf_token(client.get("/dashboard").text)
+    undo = client.post("/dashboard/treatments/undo-last", data={"csrf_token": undo_token}, follow_redirects=False)
+    assert undo.status_code == 303
+    db = SessionLocal()
+    try:
+        episode = db.get(EczemaEpisode, episode_id)
+        assert episode.status == "in_taper"
+        assert episode.current_phase_number == 2
+        assert episode.healed_at is not None
+    finally:
+        db.close()
+
+
+def test_dashboard_account_settings_update_username_and_password(client):
+    _login(client)
+    dashboard = client.get("/dashboard")
+    csrf = _csrf_token(dashboard.text)
+
+    response = client.post(
+        "/dashboard/account",
+        data={
+            "username": "new-admin",
+            "current_password": "admin",
+            "new_password": "new-password",
+            "confirm_password": "new-password",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "new-admin").one()
+        assert verify_password("new-password", account.password_hash)
+    finally:
+        db.close()
+
+    old_login_form = client.get("/dashboard/login")
+    old_csrf = _csrf_token(old_login_form.text)
+    old_login = client.post(
+        "/dashboard/login",
+        data={"username": "admin", "password": "admin", "csrf_token": old_csrf},
+        follow_redirects=False,
+    )
+    assert old_login.status_code == 401
+
+    new_login_form = client.get("/dashboard/login")
+    new_csrf = _csrf_token(new_login_form.text)
+    new_login = client.post(
+        "/dashboard/login",
+        data={"username": "new-admin", "password": "new-password", "csrf_token": new_csrf},
+        follow_redirects=False,
+    )
+    assert new_login.status_code == 303
+
+
+def test_dashboard_account_settings_reject_bad_current_password_and_mismatch(client):
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard").text)
+
+    bad_current = client.post(
+        "/dashboard/account",
+        data={
+            "username": "admin2",
+            "current_password": "wrong",
+            "new_password": "new-password",
+            "confirm_password": "new-password",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+    assert bad_current.status_code == 403
+
+    mismatch = client.post(
+        "/dashboard/account",
+        data={
+            "username": "admin",
+            "current_password": "admin",
+            "new_password": "new-password",
+            "confirm_password": "different",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+    assert mismatch.status_code == 422
+
+
+def test_dashboard_management_forms_are_grouped_as_settings_panels(client):
+    _create_taper_episode(location_code="settings_tabs", location_name="Settings tabs")
+    _login(client)
+
+    overview = client.get("/dashboard")
+    response = client.get("/dashboard?tab=settings")
+    subject = client.get("/dashboard?tab=settings&settings_tab=subject")
+    add_location = client.get("/dashboard?tab=settings&settings_tab=add-location")
+    edit_locations = client.get("/dashboard?tab=settings&settings_tab=edit-locations")
+
+    assert overview.status_code == 200
+    assert 'id="settings"' not in overview.text
+    assert response.status_code == 200
+    assert 'id="settings"' in response.text
+    assert 'class="settings-tabs"' in response.text
+    assert 'href="/dashboard?tab=settings&settings_tab=account" class="active"' in response.text
+    assert 'href="/dashboard?tab=settings&settings_tab=subject"' in response.text
+    assert "Update account" in response.text
+    assert "Display name" not in response.text
+    assert "Create location" not in response.text
+    assert "Upload image" not in response.text
+    assert "Display name" in subject.text
+    assert "Add location" in add_location.text
+    assert 'name="code"' not in add_location.text
+    assert "Upload image" in edit_locations.text or "Replace image" in edit_locations.text
+    assert "settings_tabs" not in edit_locations.text
+
+
 def test_dashboard_add_location_with_image(client):
     _login(client)
     dashboard = client.get("/dashboard")
@@ -471,20 +1105,26 @@ def test_dashboard_add_location_with_image(client):
 
     response = client.post(
         "/dashboard/locations",
-        data={"code": "new_cheek", "display_name": "New cheek", "csrf_token": csrf},
+        data={"display_name": "Gehörgang Neu", "csrf_token": csrf},
         files={"image": ("cheek.png", PNG_BYTES, "image/png")},
         follow_redirects=False,
     )
 
     assert response.status_code == 303
+    assert response.headers["location"] == "/dashboard?tab=settings&settings_tab=add-location&created_location=1"
     db = SessionLocal()
     try:
-        location = db.query(BodyLocation).filter(BodyLocation.code == "new_cheek").one()
-        assert location.display_name == "New cheek"
+        location = db.query(BodyLocation).filter(BodyLocation.code == "gehoergang_neu").one()
+        assert location.display_name == "Gehörgang Neu"
         assert location.image_mime_type == "image/png"
         assert location.image_storage_key is not None
+        episode = db.query(EczemaEpisode).filter(EczemaEpisode.location_id == location.id).one()
+        assert episode.status == "active_flare"
+        assert episode.current_phase_number == 1
     finally:
         db.close()
+    success = client.get(response.headers["location"])
+    assert "Location created and tracking started." in success.text
 
 
 def test_dashboard_replace_location_image(client):

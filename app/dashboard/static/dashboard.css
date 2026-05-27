@@ -349,15 +349,19 @@ input {
   padding: 12px 14px;
 }
 
-button {
+button,
+.button-link {
   border: 0;
   border-radius: 999px;
   background: var(--accent);
   color: white;
   cursor: pointer;
+  display: inline-grid;
+  place-items: center;
   font-weight: 700;
   min-height: 44px;
   padding: 0 18px;
+  text-decoration: none;
 }
 
 .secondary-button,
@@ -676,6 +680,143 @@ button {
   gap: 12px;
 }
 
+.backup-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 18px;
+}
+
+.backup-actions h4 {
+  margin: 0 0 8px;
+}
+
+.backup-actions p {
+  margin-bottom: 14px;
+}
+
+.import-form {
+  border-left: 1px solid var(--line);
+  padding-left: 18px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-label input {
+  width: auto;
+}
+
+.telegram-status,
+.telegram-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.telegram-actions form {
+  margin: 0;
+}
+
+.telegram-wizard {
+  display: grid;
+  gap: 14px;
+}
+
+.wizard-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  background: var(--panel);
+}
+
+.wizard-current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.wizard-step-marker {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--text);
+  font-weight: 900;
+}
+
+.wizard-current .wizard-step-marker {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.wizard-step-body {
+  display: grid;
+  gap: 10px;
+}
+
+.wizard-step-body h4 {
+  margin: 4px 0 0;
+}
+
+.compact-stack-form {
+  border-top: 0;
+  padding: 0;
+}
+
+.telegram-inline-action {
+  margin: 0;
+}
+
+.radio-card {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.radio-card input {
+  width: auto;
+  margin-top: 4px;
+}
+
+.radio-card span {
+  display: grid;
+  gap: 4px;
+}
+
+.radio-card small {
+  color: var(--muted);
+}
+
+.telegram-runtime-note {
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.status-pill {
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--text);
+  font-weight: 800;
+  padding: 8px 12px;
+}
+
+.status-running {
+  background: rgba(52, 199, 89, 0.18);
+  color: var(--ok);
+}
+
 .location-edit-row {
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1fr) minmax(0, 1fr) auto;
@@ -772,8 +913,16 @@ button {
 
   .location-edit-row,
   .inline-form,
-  .form-pair {
+  .form-pair,
+  .backup-actions {
     grid-template-columns: 1fr;
+  }
+
+  .import-form {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
+    padding-top: 18px;
   }
 
   .hero-card {

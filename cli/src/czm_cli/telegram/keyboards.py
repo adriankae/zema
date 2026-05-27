@@ -48,6 +48,15 @@ def due_prompt_keyboard(episode_id: int, *, allow_writes: bool) -> InlineKeyboar
     return InlineKeyboardMarkup(rows)
 
 
+def logged_application_keyboard(application_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Undo", callback_data=f"due:undo:{application_id}")],
+            [InlineKeyboardButton("Open menu", callback_data="menu:open")],
+        ]
+    )
+
+
 def subjects_keyboard(*, allow_writes: bool) -> InlineKeyboardMarkup | None:
     if not allow_writes:
         return open_menu_keyboard()

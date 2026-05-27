@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from pathlib import Path
 import re
 import unicodedata
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,9 +26,19 @@ from app.dashboard.auth import (
     require_valid_login_csrf,
 )
 from app.dashboard.read_model import build_dashboard_overview
+from app.import_export import export_account_data, import_account_data
 from app.location_images import get_location_image_file, store_location_image
-from app.models import Account, BodyLocation, EczemaEpisode, EpisodeEvent, EpisodePhaseHistory, Subject, TreatmentApplication
+from app.models import Account, AccountApiKey, BodyLocation, EczemaEpisode, EpisodeEvent, EpisodePhaseHistory, Subject, TreatmentApplication
 from app.services import authenticate_user, calculate_phase_due_end_at, catch_up_episode_phases, create_episode, create_location, create_subject, delete_application, delete_location, due_items, get_location, get_subject, heal_episode, issue_login_token, log_application, relapse_episode, update_account_credentials
+from app.telegram_settings import (
+    discover_telegram_chats,
+    parse_int_list,
+    reset_telegram_settings,
+    save_telegram_bot_token,
+    save_telegram_settings,
+    set_telegram_enabled,
+    telegram_settings_view,
+)
 
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -37,7 +48,7 @@ THEME_COOKIE = "zema_theme"
 THEME_PATH = SESSION_PATH
 OVERVIEW_TAB = "overview"
 SETTINGS_TAB = "settings"
-SETTINGS_TABS = {"account", "subject", "add-location", "edit-locations"}
+SETTINGS_TABS = {"account", "subject", "add-location", "edit-locations", "backup", "telegram"}
 
 
 
@@ -96,6 +107,18 @@ def _active_settings_tab(request: Request) -> str:
 def _success_message(request: Request) -> str | None:
     if request.query_params.get("created_location") == "1":
         return "Location created and tracking started."
+    if request.query_params.get("imported") == "1":
+        return "Import complete. Tracking data was replaced from the backup file."
+    if request.query_params.get("telegram_saved") == "1":
+        return "Telegram settings saved."
+    if request.query_params.get("telegram_enabled") == "1":
+        return "Telegram bot enabled."
+    if request.query_params.get("telegram_disabled") == "1":
+        return "Telegram bot disabled."
+    if request.query_params.get("telegram_reset") == "1":
+        return "Telegram setup reset."
+    if request.query_params.get("telegram_chat_linked") == "1":
+        return "Telegram chat linked."
     return None
 
 
@@ -112,6 +135,31 @@ def _require_account(request: Request, db: Session) -> Account:
 
 def _html(request: Request, template: str, context: dict, status_code: int = 200) -> HTMLResponse:
     return templates.TemplateResponse(request, template, context, status_code=status_code)
+
+
+def _telegram_settings_html(
+    request: Request,
+    db: Session,
+    account: Account,
+    *,
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    return _html(
+        request,
+        "dashboard.html",
+        {
+            "account": account,
+            "overview": _overview_from_request(db, account, request),
+            "csrf_token": issue_csrf_token(account),
+            "theme": _dashboard_theme(request),
+            "active_tab": SETTINGS_TAB,
+            "active_settings_tab": "telegram",
+            "error": error,
+            "telegram": telegram_settings_view(db, account),
+        },
+        status_code=status_code,
+    )
 
 
 @router.get("", response_class=HTMLResponse)
@@ -131,6 +179,7 @@ def dashboard_home(request: Request, db: Session = Depends(get_db)):
             "active_tab": _active_tab(request),
             "active_settings_tab": _active_settings_tab(request),
             "success_message": _success_message(request),
+            "telegram": telegram_settings_view(db, account),
         },
     )
 
@@ -235,6 +284,183 @@ def dashboard_update_account(
         path=SESSION_PATH,
     )
     return response
+
+
+@router.get("/export")
+def dashboard_export_data(request: Request, db: Session = Depends(get_db)):
+    account = _require_account(request, db)
+    payload = export_account_data(db, account)
+    filename = f"zema-export-{date.today().isoformat()}.json"
+    return Response(
+        json.dumps(payload, indent=2, sort_keys=True),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/import")
+async def dashboard_import_data(
+    request: Request,
+    csrf_token: str | None = Form(default=None),
+    backup_file: UploadFile = File(...),
+    confirm_replace: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    if confirm_replace != "yes":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="confirm replace is required")
+    try:
+        payload = json.loads((await backup_file.read()).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid import JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid import JSON")
+    import_account_data(db, account, payload)
+    return RedirectResponse("/dashboard?tab=settings&settings_tab=backup&imported=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/telegram")
+def dashboard_update_telegram(
+    request: Request,
+    bot_token: str | None = Form(default=None),
+    allowed_chat_ids: str | None = Form(default=None),
+    allowed_user_ids: str | None = Form(default=None),
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    try:
+        save_telegram_settings(
+            db,
+            account,
+            bot_token=_clean(bot_token),
+            allowed_chat_ids=parse_int_list(allowed_chat_ids, label="Allowed chat IDs"),
+            allowed_user_ids=parse_int_list(allowed_user_ids, label="Allowed user IDs"),
+            allow_writes=True,
+            allow_adherence_rebuild=False,
+            is_enabled=None,
+        )
+    except HTTPException as exc:
+        return _telegram_settings_html(request, db, account, error=str(exc.detail), status_code=exc.status_code)
+    return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/telegram/token")
+def dashboard_save_telegram_token(
+    request: Request,
+    bot_token: str = Form(...),
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    try:
+        save_telegram_bot_token(db, account, bot_token)
+    except HTTPException as exc:
+        return _telegram_settings_html(request, db, account, error=str(exc.detail), status_code=exc.status_code)
+    return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/telegram/discover")
+def dashboard_discover_telegram_chats(
+    request: Request,
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    try:
+        chats = discover_telegram_chats(db, account)
+    except HTTPException as exc:
+        return _telegram_settings_html(request, db, account, error=str(exc.detail), status_code=exc.status_code)
+    if len(chats) == 1:
+        save_telegram_settings(
+            db,
+            account,
+            bot_token=None,
+            allowed_chat_ids=[chats[0].id],
+            allowed_user_ids=[],
+            allow_writes=True,
+            allow_adherence_rebuild=False,
+            is_enabled=None,
+        )
+        return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_chat_linked=1", status_code=status.HTTP_303_SEE_OTHER)
+    overview = _overview_from_request(db, account, request)
+    telegram = telegram_settings_view(db, account)
+    telegram.discovered_chats.extend(chats)
+    if not chats:
+        telegram.notice = "No Telegram chats found yet. Send /start to the bot, then try again."
+    return _html(
+        request,
+        "dashboard.html",
+        {
+            "account": account,
+            "overview": overview,
+            "csrf_token": issue_csrf_token(account),
+            "theme": _dashboard_theme(request),
+            "active_tab": SETTINGS_TAB,
+            "active_settings_tab": "telegram",
+            "telegram": telegram,
+        },
+    )
+
+
+@router.post("/telegram/enable")
+def dashboard_enable_telegram(
+    request: Request,
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    try:
+        set_telegram_enabled(db, account, True)
+    except HTTPException as exc:
+        return _telegram_settings_html(request, db, account, error=str(exc.detail), status_code=exc.status_code)
+    return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_enabled=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/telegram/disable")
+def dashboard_disable_telegram(
+    request: Request,
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    try:
+        set_telegram_enabled(db, account, False)
+    except HTTPException as exc:
+        return _telegram_settings_html(request, db, account, error=str(exc.detail), status_code=exc.status_code)
+    return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_disabled=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/telegram/reset")
+def dashboard_reset_telegram(
+    request: Request,
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    reset_telegram_settings(db, account)
+    return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_reset=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/theme")
@@ -423,14 +649,14 @@ def _latest_undoable_dashboard_event(db: Session, account: Account) -> EpisodeEv
         .join(EczemaEpisode, EczemaEpisode.id == EpisodeEvent.episode_id)
         .where(
             EczemaEpisode.account_id == account.id,
-            EpisodeEvent.actor_type == "user",
-            EpisodeEvent.actor_id == f"user:{account.id}",
             EpisodeEvent.event_type.in_(("application_logged", "healed_marked", "relapse_marked")),
         )
         .order_by(EpisodeEvent.occurred_at.desc(), EpisodeEvent.id.desc())
         .limit(100)
     ).scalars())
     for event in events:
+        if not _event_was_created_from_dashboard_or_telegram(db, account, event):
+            continue
         if event.event_type == "application_logged":
             application = _application_from_logged_event(db, account, event)
             if application is not None and not application.is_deleted and not application.is_voided:
@@ -438,6 +664,19 @@ def _latest_undoable_dashboard_event(db: Session, account: Account) -> EpisodeEv
         elif _phase_action_can_be_undone(db, account, event):
             return event
     return None
+
+
+def _event_was_created_from_dashboard_or_telegram(db: Session, account: Account, event: EpisodeEvent) -> bool:
+    if event.actor_type == "user" and event.actor_id == f"user:{account.id}":
+        return True
+    if event.actor_type != "agent" or not event.actor_id.startswith("api-key:"):
+        return False
+    try:
+        api_key_id = int(event.actor_id.removeprefix("api-key:"))
+    except ValueError:
+        return False
+    api_key = db.get(AccountApiKey, api_key_id)
+    return bool(api_key and api_key.account_id == account.id and api_key.name == "telegram-dashboard-bot")
 
 
 def _application_from_logged_event(db: Session, account: Account, event: EpisodeEvent) -> TreatmentApplication | None:

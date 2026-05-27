@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.adherence import list_adherence_rows, persist_episode_adherence, rebuild_active_episode_adherence, summarize_adherence
 from app.location_images import get_location_image_file, remove_location_image, store_location_image
+from app.import_export import export_account_data, import_account_data
 from app.dependencies import ActorContext, get_current_actor
 from app.core.database import get_db
 from app.core.time import utc_now
@@ -38,6 +40,7 @@ from app.schemas import (
     EventListResponse,
     EpisodeAdherenceResponse,
     HealEpisodeRequest,
+    ImportResponse,
     LoginRequest,
     LoginResponse,
     LocationCreateRequest,
@@ -204,6 +207,30 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 @router.get("/auth/me", response_model=AccountOut)
 def me(actor: ActorContext = Depends(get_current_actor)):
     return AccountOut.model_validate(actor.account)
+
+
+@router.get("/export")
+def export_data(actor: ActorContext = Depends(get_current_actor), db: Session = Depends(get_db)):
+    payload = export_account_data(db, actor.account)
+    filename = f"zema-export-{date.today().isoformat()}.json"
+    return Response(
+        json.dumps(payload, indent=2, sort_keys=True),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/import", response_model=ImportResponse)
+async def import_data(file: UploadFile = File(...), actor: ActorContext = Depends(get_current_actor), db: Session = Depends(get_db)):
+    if file.content_type not in {None, "", "application/json", "text/json"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="import file must be JSON")
+    try:
+        payload = json.loads((await file.read()).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid import JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid import JSON")
+    return ImportResponse(imported=import_account_data(db, actor.account, payload))
 
 
 @router.post("/api-keys", response_model=ApiKeyCreateResponse)

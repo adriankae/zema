@@ -56,20 +56,28 @@ services:
   zema-telegram:
     build:
       context: .
-      dockerfile: docker/cli.Dockerfile
+      dockerfile: docker/api.Dockerfile
     restart: unless-stopped
-    command: zema telegram run
+    command: python -m app.telegram_runtime
     environment:
-      CZM_BASE_URL: http://zema-be:28173
-      CZM_API_KEY: ${CZM_API_KEY}
-      CZM_TIMEZONE: ${CZM_TIMEZONE:-Europe/Berlin}
-      ZEMA_TELEGRAM_BOT_TOKEN: ${ZEMA_TELEGRAM_BOT_TOKEN}
-      ZEMA_TELEGRAM_ALLOWED_CHAT_IDS: ${ZEMA_TELEGRAM_ALLOWED_CHAT_IDS}
-      ZEMA_TELEGRAM_ALLOWED_USER_IDS: ${ZEMA_TELEGRAM_ALLOWED_USER_IDS:-}
-      ZEMA_TELEGRAM_ALLOW_WRITES: ${ZEMA_TELEGRAM_ALLOW_WRITES:-true}
-      ZEMA_TELEGRAM_ALLOW_ADHERENCE_REBUILD: ${ZEMA_TELEGRAM_ALLOW_ADHERENCE_REBUILD:-false}
+      DATABASE_URL: postgresql+psycopg://eczema:eczema@postgres:5432/eczema
+      APP_ENV: local
+      DEPLOYMENT_TIMEZONE: ${CZM_TIMEZONE:-Europe/Berlin}
+      APP_PORT: 28173
+      TELEGRAM_BACKEND_URL: http://zema-be:28173
+      ENABLE_SCHEDULER: "false"
+      JWT_SECRET: change-me-in-production
+      INITIAL_USERNAME: admin
+      INITIAL_PASSWORD: admin
+      LOCATION_IMAGE_DIR: /data/location-images
+      LOCATION_IMAGE_MAX_BYTES: 5242880
     depends_on:
-      - zema-be
+      postgres:
+        condition: service_healthy
+      zema-be:
+        condition: service_started
+    volumes:
+      - zema-location-images:/data/location-images
     profiles:
       - telegram
 

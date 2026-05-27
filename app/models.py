@@ -55,6 +55,27 @@ class AccountApiKey(Base):
     account: Mapped[Account] = relationship(back_populates="api_keys")
 
 
+class TelegramBotSettings(Base):
+    __tablename__ = "telegram_bot_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    bot_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bot_username: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    allowed_chat_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
+    allowed_user_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
+    allow_writes: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    allow_adherence_rebuild: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    api_key_id: Mapped[int | None] = mapped_column(ForeignKey("account_api_keys.id", ondelete="SET NULL"), nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class Subject(Base):
     __tablename__ = "subjects"
 

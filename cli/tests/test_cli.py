@@ -200,6 +200,53 @@ def test_cli_uses_configured_base_url(monkeypatch, tmp_path):
     assert seen["api_key"] == "secret"
 
 
+def test_cli_backup_export_writes_file(monkeypatch, tmp_path, capsys):
+    backup_path = tmp_path / "backup.json"
+    fake = FakeClient({("DOWNLOAD", "/export"): (b'{"format":"zema.account-export"}', "application/json")})
+    monkeypatch.setattr(cli_module, "CzmClient", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(cli_module, "resolve_runtime_config", lambda **kwargs: DummyConfig())
+
+    exit_code = cli_module.main(["--base-url", "http://example", "--api-key", "k", "backup", "export", "--output", str(backup_path)])
+
+    assert exit_code == 0
+    assert backup_path.read_bytes() == b'{"format":"zema.account-export"}'
+    assert fake.requests == [("DOWNLOAD", "/export")]
+    assert "Wrote backup to" in capsys.readouterr().out
+
+
+def test_cli_backup_import_requires_confirmation(monkeypatch, tmp_path, capsys):
+    backup_path = tmp_path / "backup.json"
+    backup_path.write_text("{}", encoding="utf-8")
+    fake = FakeClient({})
+    monkeypatch.setattr(cli_module, "CzmClient", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(cli_module, "resolve_runtime_config", lambda **kwargs: DummyConfig())
+
+    exit_code = cli_module.main(["--base-url", "http://example", "--api-key", "k", "backup", "import", str(backup_path)])
+
+    assert exit_code == EXIT_USAGE
+    assert "rerun with --yes" in capsys.readouterr().err
+
+
+def test_cli_backup_import_uploads_json(monkeypatch, tmp_path, capsys):
+    backup_path = tmp_path / "backup.json"
+    backup_path.write_text("{}", encoding="utf-8")
+    fake = FakeClient(
+        {
+            ("UPLOAD", "/import"): {
+                "imported": {"subjects": 1, "locations": 2, "episodes": 3, "applications": 4, "events": 5, "adherence_days": 6}
+            }
+        }
+    )
+    monkeypatch.setattr(cli_module, "CzmClient", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(cli_module, "resolve_runtime_config", lambda **kwargs: DummyConfig())
+
+    exit_code = cli_module.main(["--base-url", "http://example", "--api-key", "k", "backup", "import", str(backup_path), "--yes"])
+
+    assert exit_code == 0
+    assert fake.requests == [("UPLOAD", "/import", "file", str(backup_path), "application/json")]
+    assert "Imported backup: 1 subjects, 2 locations, 3 episodes, 4 applications." in capsys.readouterr().out
+
+
 def test_cli_setup_rejects_invalid_base_url(monkeypatch, tmp_path, capsys):
     config_path = tmp_path / "config.toml"
     exit_code = cli_module.main(["setup", "--config", str(config_path), "--base-url", "not-a-url"])

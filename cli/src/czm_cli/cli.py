@@ -21,6 +21,7 @@ from .errors import (
 )
 from .commands.application import register as register_application_commands
 from .commands.adherence import register as register_adherence_commands
+from .commands.backup import register as register_backup_commands
 from .commands.config import register as register_config_commands
 from .commands.setup import register as register_setup_commands
 from .commands.due import register as register_due_commands
@@ -53,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_due_commands(subparsers, parent)
     register_adherence_commands(subparsers, parent)
     register_events_commands(subparsers, parent)
+    register_backup_commands(subparsers, parent)
     return parser
 
 

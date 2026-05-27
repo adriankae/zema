@@ -307,3 +307,16 @@ class AdherenceRebuildRequest(BaseModel):
 class AdherenceRebuildResponse(BaseModel):
     episodes_processed: int
     rows_persisted: int
+
+
+class ImportSummary(BaseModel):
+    subjects: int
+    locations: int
+    episodes: int
+    applications: int
+    events: int
+    adherence_days: int
+
+
+class ImportResponse(BaseModel):
+    imported: ImportSummary

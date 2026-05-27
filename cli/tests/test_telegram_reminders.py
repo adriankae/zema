@@ -73,6 +73,12 @@ class FakeClient:
             return {"application": {"id": 1, "episode_id": json["episode_id"]}}
         raise AssertionError(path)
 
+    def delete(self, path, json=None, params=None):
+        self.requests.append(("DELETE", path, json))
+        if path == "/applications/1":
+            return {"application": {"id": 1, "episode_id": 12, "is_deleted": True}}
+        raise AssertionError(path)
+
     def download_file(self, path):
         self.requests.append(("DOWNLOAD", path, None))
         if self.image is None:
@@ -361,6 +367,7 @@ def test_reminder_log_callback_clears_inline_keyboard_without_opening_menu():
     run(handle_callback(update, None, ctx))
     assert query.answered is True
     assert ("POST", "/applications", {"episode_id": 12}) in client.requests
-    assert query.edits == [("Logged application for 'Left elbow'", None)]
+    assert query.edits[0][0] == "Logged application for 'Left elbow'"
+    assert query.edits[0][1] is not None
     assert client.logged is True
     assert all(getattr(markup, "remove_keyboard", None) is not True for _text, markup in query.edits)

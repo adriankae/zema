@@ -20,6 +20,7 @@ from czm_cli.telegram.keyboards import (
     confirm_episode_action_keyboard,
     due_prompt_keyboard,
     episode_select_keyboard,
+    logged_application_keyboard,
     location_actions_keyboard,
     location_image_prompt_keyboard,
     locations_keyboard,
@@ -100,8 +101,16 @@ def _dispatch_callback(data: str, handler_ctx: TelegramHandlerContext, update) -
         if due_item is None:
             return "This due item is no longer due or was already handled.", None
         label = due_item.get("telegram_location_name") or due_item.get("telegram_label") or f"episode {episode_id}"
-        client.post("/applications", json={"episode_id": episode_id})
-        return f"Logged application for '{label}'", None
+        payload = client.post("/applications", json={"episode_id": episode_id})
+        application = payload.get("application") if isinstance(payload, dict) else None
+        application_id = application.get("id") if isinstance(application, dict) else None
+        keyboard = logged_application_keyboard(application_id) if isinstance(application_id, int) else None
+        return f"Logged application for '{label}'", keyboard
+    if data.startswith("due:undo:"):
+        ensure_writes_allowed(config.telegram)
+        application_id = int(data.rsplit(":", 1)[1])
+        client.delete(f"/applications/{application_id}")
+        return "Undid last application log.", main_menu_keyboard()
     if data == "menu:subjects":
         return formatting.format_subjects(client.get("/subjects")), subjects_keyboard(allow_writes=config.telegram.allow_writes)
     if data == "subject:create":

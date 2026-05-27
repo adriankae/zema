@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
@@ -94,6 +95,8 @@ class FakeClient:
         self.requests.append(("DELETE", path, json))
         if self.delete_error is not None:
             raise self.delete_error
+        if path == "/applications/1":
+            return {"application": {"id": 1, "episode_id": 12, "is_deleted": True}}
         if path == "/subjects/1":
             return {"id": 1, "display_name": "Child A"}
         raise AssertionError(path)
@@ -397,9 +400,24 @@ def test_quick_log_button_posts_application():
     run(handle_callback(update, None, ctx))
     assert query.answered is True
     assert ("POST", "/applications", {"episode_id": 12}) in client.requests
-    assert query.edits == [("Logged application for 'Left elbow'", None)]
+    assert query.edits[0][0] == "Logged application for 'Left elbow'"
+    keyboard = query.edits[0][1]
+    assert isinstance(keyboard, InlineKeyboardMarkup)
+    assert keyboard.inline_keyboard[0][0].text == "Undo"
+    assert keyboard.inline_keyboard[0][0].callback_data == "due:undo:1"
     assert query.message.replies == []
     assert all(getattr(markup, "remove_keyboard", None) is not True for _text, markup in query.edits)
+
+
+def test_quick_log_undo_button_deletes_application():
+    ctx, client, update = make_handler(allow_writes=True)
+    query = FakeQuery("due:undo:1")
+    update.callback_query = query
+    run(handle_callback(update, None, ctx))
+    assert query.answered is True
+    assert ("DELETE", "/applications/1", None) in client.requests
+    assert query.edits[0][0] == "Undid last application log."
+    assert isinstance(query.edits[0][1], InlineKeyboardMarkup)
 
 
 def test_due_today_fetches_fresh_backend_state_after_logging():
@@ -448,6 +466,7 @@ def test_adherence_menu_includes_summary_90_days():
 
 def test_adherence_summary_sends_text_and_heatmap(monkeypatch):
     ctx, client, update = make_handler(chat_type="private")
+    monkeypatch.setattr(handlers_module, "local_today", lambda _timezone: date(2026, 4, 26))
     monkeypatch.setattr(handlers_module, "render_heatmap_png", lambda grid: b"png-bytes")
     query = FakeQuery("adh:summary:30")
     update.callback_query = query

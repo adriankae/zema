@@ -15,12 +15,14 @@ ENV PATH="/opt/venv/bin:${PATH}"
 
 COPY pyproject.toml /app/pyproject.toml
 COPY app /app/app
+COPY cli /app/cli
 COPY alembic.ini /app/alembic.ini
 COPY alembic /app/alembic
 COPY tests /app/tests
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -e ".[dev]"
+    && python -m pip install -e ".[dev]" \
+    && python -m pip install /app/cli
 
 EXPOSE 28173
 

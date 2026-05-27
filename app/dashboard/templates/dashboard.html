@@ -235,6 +235,8 @@
           <a href="/dashboard?tab=settings&settings_tab=subject" class="{% if active_settings_tab == 'subject' %}active{% endif %}" aria-current="{% if active_settings_tab == 'subject' %}page{% else %}false{% endif %}">Subject</a>
           <a href="/dashboard?tab=settings&settings_tab=add-location" class="{% if active_settings_tab == 'add-location' %}active{% endif %}" aria-current="{% if active_settings_tab == 'add-location' %}page{% else %}false{% endif %}">Add Location</a>
           <a href="/dashboard?tab=settings&settings_tab=edit-locations" class="{% if active_settings_tab == 'edit-locations' %}active{% endif %}" aria-current="{% if active_settings_tab == 'edit-locations' %}page{% else %}false{% endif %}">Edit Locations</a>
+          <a href="/dashboard?tab=settings&settings_tab=backup" class="{% if active_settings_tab == 'backup' %}active{% endif %}" aria-current="{% if active_settings_tab == 'backup' %}page{% else %}false{% endif %}">Import / Export</a>
+          <a href="/dashboard?tab=settings&settings_tab=telegram" class="{% if active_settings_tab == 'telegram' %}active{% endif %}" aria-current="{% if active_settings_tab == 'telegram' %}page{% else %}false{% endif %}">Telegram</a>
         </nav>
 
         <article class="card management-card settings-card">
@@ -278,7 +280,7 @@
               <button type="submit">Add location</button>
             </form>
           </section>
-          {% else %}
+          {% elif active_settings_tab == 'edit-locations' %}
 
           <section class="settings-panel" aria-labelledby="edit-locations-settings-title">
             <h3 id="edit-locations-settings-title">Edit Locations</h3>
@@ -319,6 +321,123 @@
                   </form>
                 </div>
               {% endfor %}
+            </div>
+          </section>
+          {% elif active_settings_tab == 'backup' %}
+
+          <section class="settings-panel" aria-labelledby="backup-settings-title">
+            <h3 id="backup-settings-title">Import / Export</h3>
+            <div class="backup-actions settings-form">
+              <div>
+                <h4>Export backup</h4>
+                <p class="muted">Download the current tracking data for this account, including location images.</p>
+                <a class="button-link" href="/dashboard/export">Download JSON</a>
+              </div>
+              <form method="post" action="/dashboard/import" class="stack-form import-form" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <h4>Import backup</h4>
+                <p class="muted">Import replaces this account's tracking data. Login and API-key settings stay unchanged.</p>
+                <label><span>Backup file</span><input name="backup_file" type="file" accept="application/json,.json" required></label>
+                <label class="checkbox-label"><input name="confirm_replace" type="checkbox" value="yes" required> Replace current tracking data</label>
+                <button class="danger-button" type="submit">Import backup</button>
+              </form>
+            </div>
+          </section>
+          {% else %}
+
+          <section class="settings-panel" aria-labelledby="telegram-settings-title">
+            <h3 id="telegram-settings-title">Telegram Bot</h3>
+            <div class="telegram-status settings-form">
+              <span class="{% if telegram.enabled %}status-pill status-running{% else %}status-pill{% endif %}">{% if telegram.enabled %}Enabled{% else %}Disabled{% endif %}</span>
+              {% if telegram.bot_username %}
+                <span class="muted">@{{ telegram.bot_username }}</span>
+              {% endif %}
+              {% if telegram.configured %}
+                <span class="muted">Token saved</span>
+              {% else %}
+                <span class="muted">No token saved</span>
+              {% endif %}
+              {% if telegram.configured %}
+                <form method="post" action="/dashboard/telegram/reset" class="telegram-inline-action">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="danger-button" type="submit">Reset Telegram setup</button>
+                </form>
+              {% endif %}
+            </div>
+            {% if telegram.notice %}
+              <p class="form-success">{{ telegram.notice }}</p>
+            {% endif %}
+            {% if telegram.last_error %}
+              <p class="form-error">{{ telegram.last_error }}</p>
+            {% endif %}
+
+            <div class="telegram-wizard settings-form">
+              <section class="wizard-step {% if telegram.current_step == 1 %}wizard-current{% endif %}">
+                <div class="wizard-step-marker">1</div>
+                <div class="wizard-step-body">
+                  <h4>Connect the bot</h4>
+                  <p class="muted">Paste the token from BotFather. Zema checks it with Telegram and stores it encrypted.</p>
+                  <form method="post" action="/dashboard/telegram/token" class="stack-form compact-stack-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <label><span>Bot token</span><input name="bot_token" type="password" autocomplete="off" placeholder="{% if telegram.configured %}Replace existing token{% else %}123456:ABC...{% endif %}" required></label>
+                    <button type="submit">{% if telegram.configured %}Replace and check bot{% else %}Check bot{% endif %}</button>
+                  </form>
+                </div>
+              </section>
+
+              <section class="wizard-step {% if telegram.current_step == 2 %}wizard-current{% endif %}">
+                <div class="wizard-step-marker">2</div>
+                <div class="wizard-step-body">
+                  <h4>Link your chat</h4>
+                  <p class="muted">Send /start to the bot in Telegram, then find the chat here. No manual chat-ID copy needed.</p>
+                  <form method="post" action="/dashboard/telegram/discover" class="telegram-inline-action">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="secondary-button" type="submit"{% if not telegram.configured %} disabled{% endif %}>Find chats</button>
+                  </form>
+                  {% if telegram.discovered_chats %}
+                    <form method="post" action="/dashboard/telegram" class="stack-form compact-stack-form">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="allowed_user_ids" value="{{ telegram.allowed_user_ids_text }}">
+                      {% for chat in telegram.discovered_chats %}
+                        <label class="radio-card">
+                          <input name="allowed_chat_ids" type="radio" value="{{ chat.id }}"{% if chat.id in telegram.allowed_chat_ids %} checked{% elif loop.first and not telegram.allowed_chat_ids %} checked{% endif %}>
+                          <span>
+                            <strong>{{ chat.title }}</strong>
+                            <small>{{ chat.type }} chat · {{ chat.id }}{% if chat.user_id %} · user {{ chat.user_id }}{% endif %}</small>
+                          </span>
+                        </label>
+                      {% endfor %}
+                      <button type="submit">Use selected chat</button>
+                    </form>
+                  {% elif telegram.allowed_chat_ids %}
+                    <p class="muted">Linked chat IDs: {{ telegram.allowed_chat_ids_text }}</p>
+                  {% endif %}
+                </div>
+              </section>
+
+              <section class="wizard-step {% if telegram.current_step == 3 %}wizard-current{% endif %}">
+                <div class="wizard-step-marker">3</div>
+                <div class="wizard-step-body">
+                  <h4>Enable Telegram</h4>
+                  <p class="muted">Enabling creates a private API key for the Telegram runtime.</p>
+                  {% if telegram.allowed_chat_ids %}
+                    <p class="muted">Linked chat IDs: {{ telegram.allowed_chat_ids_text }}</p>
+                  {% else %}
+                    <p class="muted">Choose a chat before enabling Telegram.</p>
+                  {% endif %}
+                  <div class="telegram-actions">
+                    <form method="post" action="/dashboard/telegram/enable">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <button type="submit"{% if not telegram.configured or not telegram.allowed_chat_ids or telegram.enabled %} disabled{% endif %}>Enable Bot</button>
+                    </form>
+                  </div>
+                </div>
+              </section>
+
+              <div class="telegram-runtime-note">
+                <strong>Runtime</strong>
+                <p class="muted">The dashboard manages setup. Keep the app stack running with <code>docker compose --profile telegram up -d</code>.</p>
+              </div>
             </div>
           </section>
           {% endif %}

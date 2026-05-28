@@ -373,6 +373,48 @@ zema-location-images
 
 Keep `.env` private. It contains secrets and should not be committed. Back up `.env`, the Postgres volume, and the location image volume. `docker compose down` stops containers but keeps named volumes; `docker compose down -v` deletes named volumes and destroys database/image data.
 
+## Updating Zema
+
+For a normal Docker Compose install, update from the repository root:
+
+```bash
+scripts/update.sh
+```
+
+The script:
+
+1. Refuses to run if tracked local files have uncommitted changes.
+2. Exports a JSON backup first when `CZM_API_KEY` is available in the environment or `.env`.
+3. Fetches `origin`.
+4. Fast-forwards to `origin/main`.
+5. Rebuilds and restarts Docker Compose.
+6. Waits for `/health` to pass.
+
+If you already made a manual backup, or you cannot provide an API key, you can explicitly skip the backup step:
+
+```bash
+scripts/update.sh --skip-backup
+```
+
+To update to a specific tag or branch:
+
+```bash
+scripts/update.sh --ref v0.5.0
+scripts/update.sh --ref origin/main
+```
+
+If you expose Zema through a reverse proxy on the same machine, keep the default local bind:
+
+```env
+ZEMA_HOST_BIND=127.0.0.1
+```
+
+If another device on your private network must reach Zema directly, set this intentionally before restarting:
+
+```env
+ZEMA_HOST_BIND=0.0.0.0
+```
+
 ## Authentication And API Keys
 
 The local Docker Compose setup seeds a default account when the database is empty:

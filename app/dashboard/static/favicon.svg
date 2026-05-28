@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Zema">
+  <defs>
+    <linearGradient id="zema-bg" x1="10" y1="8" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1f8f75"/>
+      <stop offset="1" stop-color="#f0b35a"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#10231f"/>
+  <path d="M18 15h30L24 49h25" fill="none" stroke="url(#zema-bg)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M38 16c8 2 13 8 14 17-8 1-15-2-19-8 2-4 3-6 5-9Z" fill="#dff7e9"/>
+  <path d="M36 20c5 2 9 5 13 10" fill="none" stroke="#1f8f75" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

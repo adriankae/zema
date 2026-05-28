@@ -453,6 +453,21 @@ def test_due_header_renders_primary_log_all_button(client, monkeypatch):
     assert "font-size: 28px;" in css
 
 
+def test_dashboard_serves_favicon(client):
+    response = client.get("/dashboard")
+    favicon = client.get("/dashboard/assets/favicon.svg")
+    root_favicon = client.get("/favicon.ico")
+
+    assert response.status_code == 200
+    assert '<link rel="icon" href="/dashboard/assets/favicon.svg?v=2" type="image/svg+xml">' in response.text
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"].startswith("image/svg+xml")
+    assert "<svg" in favicon.text
+    assert "Zema" in favicon.text
+    assert root_favicon.status_code == 200
+    assert root_favicon.headers["content-type"].startswith("image/svg+xml")
+
+
 def test_upcoming_section_renders_active_and_tapering_non_due_episodes(client, monkeypatch):
     import app.dashboard.read_model as read_model
     import app.services as services

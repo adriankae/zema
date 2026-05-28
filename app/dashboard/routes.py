@@ -253,9 +253,14 @@ def dashboard_login_form(request: Request):
 
 @router.get("/assets/{filename}")
 def dashboard_asset(filename: str):
-    if filename != "dashboard.css":
+    asset_types = {
+        "dashboard.css": "text/css",
+        "favicon.svg": "image/svg+xml",
+    }
+    media_type = asset_types.get(filename)
+    if media_type is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="asset not found")
-    return FileResponse(ASSET_DIR / filename, media_type="text/css")
+    return FileResponse(ASSET_DIR / filename, media_type=media_type)
 
 
 @router.post("/login", response_class=HTMLResponse)

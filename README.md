@@ -1,20 +1,43 @@
 # Zema
 
-Zema is a self-hosted eczema treatment tracker for people who need to follow a steroid taper without relying on memory, paper notes, or generic habit apps.
+Zema is a private eczema taper tracker. It tells you which body locations need treatment today, which ones are coming up next, and whether you stayed on schedule.
 
-It gives you a private dashboard, a CLI, and an optional Telegram bot for the same source of truth: which body locations are active, what phase each location is in, what is due now, what is coming next, what was logged, and how adherence is trending.
+It is for people who have to follow a topical steroid taper and do not want to keep the plan in their head, in scattered notes, or in a generic habit app. Each location gets its own schedule, photo, phase, history, and adherence view.
 
-The core promise is simple:
+Zema does not decide your treatment plan and does not replace medical advice. It helps you follow the plan you already have.
 
-- **Know what to do now.** Open the dashboard and see only the locations that need treatment.
-- **Never lose the taper schedule.** Zema tracks phase progression, phase-1 morning/evening slots, healing, relapse, and catch-up after restarts.
-- **Keep evidence.** Each treatment application, phase change, relapse, and adherence day is backed by database state and event history.
-- **Use the surface that fits the moment.** Dashboard at home, Telegram reminders on the go, CLI/API for agents and automation.
-- **Own the data.** It runs on your machine or server with PostgreSQL and Docker volumes.
+## What You Get
 
-## Five-Minute Start
+Open Zema and you get one practical dashboard:
 
-Requirements: Docker and Docker Compose.
+- **Due Now** shows only the locations that need action.
+- **Upcoming** shows what is next, so tomorrow does not surprise you.
+- **Location cards** keep the photo, phase, last phase change, next phase change, and location-specific adherence together.
+- **Adherence** shows missed, due, not-due, and completed days over week, month, year, all time, or a custom range.
+- **Privacy mode** masks location names when someone else can see your screen.
+- **Optional Telegram** can remind you and let you log from your phone.
+
+The feeling Zema is aiming for is: "I know exactly what to do now, and I can trust the schedule."
+
+## Is This For Me?
+
+Zema is a good fit if:
+
+- You are tracking eczema treatment across more than one body location.
+- Different locations can be in different taper phases.
+- Phase 1 can require morning and evening applications.
+- Later phases are less frequent and easy to forget.
+- You want a local, self-hosted record instead of a cloud habit app.
+
+Zema is probably not the right fit if:
+
+- You want a hosted app with no setup.
+- You only need a simple daily checkbox.
+- You want Zema to recommend medication, dosing, or a medical plan.
+
+## Fastest Way To Try It
+
+You need Docker Desktop, Docker Compose, and a terminal. If those words are unfamiliar, ask a technical friend to do this first setup with you; after it is running, day-to-day use is in the browser.
 
 ```bash
 git clone https://github.com/adriankae/zema.git
@@ -23,109 +46,101 @@ docker compose up -d postgres zema-be
 curl -sS http://localhost:28173/health
 ```
 
-Then open:
+If the health command prints `{"status":"ok"}`, open:
 
 ```text
 http://localhost:28173/dashboard
 ```
 
-Local default login:
+Use the local default login:
 
 ```text
 username: admin
 password: admin
 ```
 
-From the dashboard you can:
+Change this password before using Zema for real.
 
-- create locations with thumbnails;
-- start tracking a new eczema episode automatically when a location is added;
-- see Due Now and Upcoming treatment cards;
-- log one location or all currently due locations;
-- mark a phase-1 location as healed;
-- mark a tapering location as relapsed;
-- undo the last dashboard action;
-- inspect adherence over week, month, year, all time, or a custom range;
-- manage account settings, subject name, and locations.
-
-Change the default credentials before using Zema for real.
-
-First-use checklist:
+## First 10 Minutes
 
 1. Go to `Settings -> Account` and change `admin/admin`.
 2. Go to `Settings -> Subject` and name the person being tracked.
-3. Go to `Settings -> Add Location`, add a display name like `right foot`, and optionally upload a photo.
-4. Return to `Overview`; the new location starts in phase 1 automatically.
-5. Use `Log`, `Healed`, or `Relapsed` from the Due Now card as treatment changes.
-6. Check Adherence after a few days to see missed, due, not-due, and completed days.
+3. Go to `Settings -> Add Location`.
+4. Add a display name like `right foot`, `left hand`, or `neck`.
+5. Add a photo if it helps you recognize the location quickly.
+6. Return to `Overview`.
 
-## What Zema Is
+The location starts in phase 1 automatically. If it is due, it appears in `Due Now`.
 
-Zema has three user-facing surfaces over one backend:
+Use the main actions like this:
 
-- **Dashboard** — the fastest way to manage a single-user treatment routine in the browser.
-- **Telegram bot** — optional button-driven reminders and logging from allowlisted chats.
-- **CLI/API** — stable commands and JSON output for power users, agents, and automation.
+- **Log** after you apply treatment to one location.
+- **Log all locations** when you treated everything currently due.
+- **Healed** when a phase-1 location is ready to start tapering.
+- **Relapsed** when a tapering location needs to restart.
+- **Undo** when the last dashboard action was a mistake.
 
-Internally, Zema is designed as two cooperating runtime parts:
+## Daily Use
 
-- `zema-be`: the backend API and system of record.
-- `zema-cli`: a separate runtime image containing the `zema` CLI.
+Most days should be simple:
 
-The backend owns all domain logic. The CLI is a client/tooling layer that calls backend HTTP APIs, parses responses, renders terminal output, emits JSON, and returns stable exit codes.
+1. Open `/dashboard`.
+2. Check `Due Now`.
+3. Treat those locations.
+4. Click `Log` or `Log all locations`.
+5. Ignore locations that are not due.
 
-Use `zema` as the preferred CLI command. The older `czm` command remains available as a compatibility alias.
+When you want context, click the `i` button next to a location. The info card shows the last phase change, next phase change, and adherence for only that location. You can switch the graph between week, month, year, and all time. Clicking a day in the graph shows what was logged and what was missed; missed treatments can be backfilled there.
 
-## Why Zema Exists
+## How The Taper Model Works
 
-Topical steroid tapers are easy to mess up in normal life. Phase 1 may need two slots per day. Later phases may need every 2, 3, 4, 5, 6, or 7 days. Multiple body locations can be in different phases at the same time. A relapse can reset one location without changing the others.
+Zema tracks each body location separately.
 
-Zema is built around that reality:
+- A new location starts in phase 1.
+- Phase 1 can have morning and evening treatment slots.
+- When you mark a location as healed, it enters tapering phases.
+- Later phases are spaced farther apart.
+- A relapse resets that location without changing the others.
+- Zema catches up phase state after restarts, so the dashboard does not depend on the app being open all the time.
 
-- **Location-first tracking.** Each body location has its own active episode, phase, image, and history.
-- **Operational due logic.** The Due Now list is about what needs action now, not just historical adherence.
-- **Restart-safe scheduling.** Phase catch-up runs on startup and dashboard reads, so due state stays correct after downtime.
-- **Single-user dashboard flow.** The browser UI hides unnecessary IDs and focuses on location, thumbnail, phase, and action.
-- **Auditable history.** Applications can be edited, voided, deleted, and listed; events and timelines explain what happened.
-- **Adherence that respects the taper.** Scoring uses the phase schedule and treats not-due days differently from missed days.
+This is why a normal habit tracker is a poor fit: one person can have several active locations, each with a different phase and next due date.
+
+## Optional: Telegram
+
+The dashboard is the best place to start. Add Telegram later if you want phone reminders and button-based logging.
+
+In the dashboard, go to `Settings -> Telegram`. The setup wizard allows one bot per Zema user. After setup, the page shows `Bot active`, the bot handle, and a reset button.
+
+Telegram is optional. Zema works without it.
+
+## What Runs On Your Machine
+
+Zema is self-hosted:
+
+- `zema-be` is the web app and backend.
+- `postgres` stores treatment history, phase state, adherence, and account data.
+- `zema-cli` is optional for command-line use.
+- `zema-telegram` is optional for the Telegram bot.
+
+Your local Docker volumes keep the database and location images. Do not run `docker compose down -v` unless you want to delete that data.
+
+## Safety Checklist Before Real Use
+
+- Change the default `admin/admin` login.
+- Use a private machine or private server.
+- Keep `.env`, API keys, Telegram tokens, and backups private.
+- Back up the Postgres volume and location image volume.
+- Do not expose the backend publicly without TLS, authentication, and reverse-proxy hardening.
+
+## Technical Reference
+
+The rest of this README is for installation, deployment, CLI/API usage, Telegram setup, development, and troubleshooting.
 
 ## Product Surfaces
 
-### Dashboard
-
-The dashboard is available at:
-
-```text
-http://localhost:28173/dashboard
-```
-
-It is the recommended first interface. It includes:
-
-- Due Now cards with location thumbnail, phase, phase-1 slot when relevant, `Log`, `Healed`, and `Relapsed` actions.
-- `Log all locations` for the current due set.
-- Upcoming rows with next/last treatment dates and phase-1 morning/evening slots.
-- Adherence heatmap with hover dates and stable time ranges.
-- Settings tabs for account, subject, add location, and edit/delete locations.
-
-### CLI
-
-Use the CLI when you want scriptable output:
-
-```bash
-zema due list
-zema adherence summary --last 30 --json
-zema application log --episode 1
-```
-
-### Telegram
-
-Use Telegram when you want allowlisted reminders and button-driven logging:
-
-```bash
-zema setup telegram
-zema telegram test
-zema telegram run
-```
+- **Dashboard**: recommended first interface for browser-based use.
+- **Telegram bot**: optional reminders and logging from allowlisted chats.
+- **CLI/API**: scriptable commands and JSON output for power users, agents, and automation.
 
 ## Architecture
 
@@ -174,7 +189,7 @@ docker-compose.yml   Local postgres, zema-be, and profiled zema-cli services
 
 The CLI package is still named `czm-cli` and its internal Python package is still under `cli/src/czm_cli`. The public command name is `zema`, with `czm` kept as a compatibility alias.
 
-## Features
+## Feature Summary
 
 - Account-scoped authentication with username/password login, JWT access tokens, and hashed API keys.
 - Server-rendered dashboard with login, CSRF protection, dark mode, real settings tabs, thumbnails, and treatment actions.
@@ -189,6 +204,9 @@ The CLI package is still named `czm-cli` and its internal Python package is stil
 - Event history and timelines.
 - Daily adherence calculation and persisted audit snapshots.
 - Adherence dashboard ranges with hover dates, pre-start days, due today vs missed past days, and not-due completion handling.
+- Privacy mode for masked location names.
+- Location info cards with phase changes, location-specific adherence, and missed-treatment backfill.
+- Optional dashboard Telegram setup wizard for one bot per user.
 - In-process scheduler for phase progression.
 - Dockerized backend, PostgreSQL, and separate CLI/agent runtime.
 

@@ -14,7 +14,16 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.time import utc_now
 from app.models import Account, TelegramBotSettings
-from app.telegram_settings import decrypt_secret, ensure_telegram_api_key, get_telegram_settings
+from app.telegram_settings import (
+    RUNTIME_ACTIVE,
+    RUNTIME_NEEDS_ATTENTION,
+    RUNTIME_STARTING,
+    RUNTIME_STOPPED,
+    RUNTIME_STOPPING,
+    decrypt_secret,
+    ensure_telegram_api_key,
+    get_telegram_settings,
+)
 
 from czm_cli.config import AppConfig, TelegramConfig
 from czm_cli.client import CzmClient
@@ -55,12 +64,19 @@ class TelegramBotManager:
         with self._lock:
             worker = self._workers.get(account.id)
             if worker and worker.thread.is_alive():
+                row.runtime_status = RUNTIME_ACTIVE
+                row.runtime_last_seen_at = utc_now()
+                row.updated_at = row.runtime_last_seen_at
+                db.add(row)
+                db.commit()
                 return
         api_key = ensure_telegram_api_key(db, account, row)
         bot = validate_bot_token(token)
         row.bot_username = bot.username
         row.is_enabled = True
         row.last_error = None
+        row.runtime_status = RUNTIME_STARTING
+        row.runtime_last_seen_at = utc_now()
         row.started_at = utc_now()
         row.updated_at = row.started_at
         db.add(row)
@@ -77,13 +93,18 @@ class TelegramBotManager:
             logger.info("Started Telegram bot worker for account %s as @%s", account.id, bot.username)
 
     def stop_for_account(self, db: Session, account: Account) -> None:
+        was_running = self.is_running(account.id)
         self._stop_worker(account.id)
         row = get_telegram_settings(db, account)
         if row is None:
             return
         row.is_enabled = False
-        row.stopped_at = utc_now()
-        row.updated_at = row.stopped_at
+        now = utc_now()
+        row.runtime_status = RUNTIME_STOPPING if was_running else RUNTIME_STOPPED
+        row.runtime_last_seen_at = now
+        if not was_running:
+            row.stopped_at = now
+        row.updated_at = now
         db.add(row)
         db.commit()
 
@@ -109,6 +130,8 @@ class TelegramBotManager:
                 except Exception as exc:
                     row.last_error = str(exc)
                     row.is_enabled = False
+                    row.runtime_status = RUNTIME_NEEDS_ATTENTION
+                    row.runtime_last_seen_at = utc_now()
                     row.updated_at = utc_now()
                     db.add(row)
                     db.commit()
@@ -171,8 +194,10 @@ class TelegramBotManager:
                     if worker is not None:
                         worker.application = application
                         worker.loop = loop
+                self._mark_runtime(account_id, RUNTIME_ACTIVE)
                 logger.info("Telegram polling started for account %s", account_id)
                 application.run_polling(stop_signals=None)
+                self._mark_runtime(account_id, RUNTIME_STOPPED, enabled=False)
                 logger.info("Telegram polling stopped for account %s", account_id)
             finally:
                 client.close()
@@ -184,12 +209,35 @@ class TelegramBotManager:
                 if row is not None:
                     row.last_error = str(exc)
                     row.is_enabled = False
+                    row.runtime_status = RUNTIME_NEEDS_ATTENTION
+                    row.runtime_last_seen_at = utc_now()
                     row.stopped_at = utc_now()
                     row.updated_at = row.stopped_at
                     db.add(row)
                     db.commit()
             finally:
                 db.close()
+
+    def _mark_runtime(self, account_id: int, runtime_status: str, *, enabled: bool | None = None) -> None:
+        db = SessionLocal()
+        try:
+            row = db.query(TelegramBotSettings).filter(TelegramBotSettings.account_id == account_id).one_or_none()
+            if row is None:
+                return
+            now = utc_now()
+            row.runtime_status = runtime_status
+            row.runtime_last_seen_at = now
+            if enabled is not None:
+                row.is_enabled = enabled
+            if runtime_status == RUNTIME_ACTIVE:
+                row.started_at = row.started_at or now
+            if runtime_status == RUNTIME_STOPPED:
+                row.stopped_at = now
+            row.updated_at = now
+            db.add(row)
+            db.commit()
+        finally:
+            db.close()
 
 
 telegram_bot_manager = TelegramBotManager()

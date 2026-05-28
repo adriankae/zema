@@ -70,6 +70,8 @@ class TelegramBotSettings(Base):
     api_key_id: Mapped[int | None] = mapped_column(ForeignKey("account_api_keys.id", ondelete="SET NULL"), nullable=True)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    runtime_status: Mapped[str] = mapped_column(String(30), nullable=False, server_default=text("'stopped'"))
+    runtime_last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

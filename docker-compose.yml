@@ -56,9 +56,8 @@ services:
   zema-telegram:
     build:
       context: .
-      dockerfile: docker/api.Dockerfile
+      dockerfile: docker/telegram.Dockerfile
     restart: unless-stopped
-    command: python -m app.telegram_runtime
     environment:
       DATABASE_URL: postgresql+psycopg://eczema:eczema@postgres:5432/eczema
       APP_ENV: local

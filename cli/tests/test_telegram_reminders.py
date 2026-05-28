@@ -199,7 +199,7 @@ def test_morning_reminder_sends_location_image_and_log_button():
     assert "Good morning" not in bot.photos[0]["caption"]
     assert "needs cream" not in bot.photos[0]["caption"]
     labels = [button.text for row in bot.photos[0]["reply_markup"].inline_keyboard for button in row]
-    assert "Log application" in labels
+    assert "Done" in labels
     assert "Snooze" in labels
     assert "Open menu" in labels
     assert ("GET", "/episodes/due", None) in client.requests
@@ -267,7 +267,7 @@ def test_log_button_hidden_when_writes_disabled():
     bot = FakeBot()
     run(send_due_reminders(bot, ctx, reminder_kind="morning"))
     labels = [button.text for row in bot.messages[0]["reply_markup"].inline_keyboard for button in row]
-    assert "Log application" not in labels
+    assert "Done" not in labels
     assert "Snooze" in labels
     assert "Open menu" in labels
 
@@ -367,7 +367,7 @@ def test_reminder_log_callback_clears_inline_keyboard_without_opening_menu():
     run(handle_callback(update, None, ctx))
     assert query.answered is True
     assert ("POST", "/applications", {"episode_id": 12}) in client.requests
-    assert query.edits[0][0] == "Logged application for 'Left elbow'"
+    assert query.edits[0][0] == "Marked Left elbow done."
     assert query.edits[0][1] is not None
     assert client.logged is True
     assert all(getattr(markup, "remove_keyboard", None) is not True for _text, markup in query.edits)

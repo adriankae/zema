@@ -7,7 +7,7 @@ from app.core.database import SessionLocal
 from app.core.security import verify_password
 from app.core.time import utc_now
 from app.models import Account, AccountApiKey, BodyLocation, EczemaEpisode, EpisodeEvent, EpisodePhaseHistory, Subject, TreatmentApplication
-from app.services import create_episode, create_location, create_subject, heal_episode, log_application
+from app.services import calculate_phase_due_end_at, create_episode, create_location, create_subject, heal_episode, log_application
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
@@ -527,6 +527,260 @@ def test_phase_one_upcoming_rows_show_next_and_last_slots(client, monkeypatch):
     assert "14:00" not in upcoming_block
 
 
+def test_location_info_buttons_render_phase_changes_and_location_adherence(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 27, 12, tzinfo=timezone.utc))
+    _create_taper_episode(
+        location_code="info_location",
+        location_name="Info location",
+        healed_at=datetime(2026, 5, 25, 8, tzinfo=timezone.utc),
+    )
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert 'aria-label="Show details for Info location"' in response.text
+    assert 'id="location-info-dialog"' in response.text
+    assert 'id="location-info-template-' in response.text
+    assert "Last phase change" in response.text
+    assert "Next phase change" in response.text
+    assert "May 25" in response.text
+    assert "Jun 22" in response.text
+    assert "This location" in response.text
+    assert "Expected" in response.text
+    assert "Completed" in response.text
+    assert "Missed days" in response.text
+    assert "Partial days" not in response.text
+    assert "location-info-chain" in response.text
+    location_info_block = response.text
+    assert 'data-location-range="week"' in location_info_block
+    assert 'data-location-range="month"' in location_info_block
+    assert 'data-location-range="year"' in location_info_block
+    assert 'data-location-range="all"' in location_info_block
+    assert 'data-location-range-panel="month"' in location_info_block
+    assert 'data-adherence-detail-id="location-adherence-detail-' in location_info_block
+    assert 'id="location-adherence-detail-' in location_info_block
+    assert 'action="/dashboard/adherence/log-missing"' in location_info_block
+    assert 'adherenceDetailDialog.addEventListener("submit"' in response.text
+    assert 'await fetch(form.action' in response.text
+    assert "new DOMParser().parseFromString(html" in response.text
+    assert "refreshActiveLocationInfo(refreshedDocument);" in response.text
+    assert "adherenceDetailDialog.close();" in response.text
+    assert 'data-location-range="custom"' not in location_info_block
+    assert 'data-status="partial"' not in response.text
+    assert "location-info-trigger" in response.text
+    css = client.get("/dashboard/assets/dashboard.css")
+    assert css.status_code == 200
+    assert ".location-range-panel[hidden]" in css.text
+    assert "grid-template-columns: repeat(auto-fill, 13px)" in css.text
+
+
+def test_location_info_backfill_refreshes_missing_state(client, monkeypatch):
+    import app.adherence as adherence
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    now = datetime(2026, 5, 27, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(adherence, "utc_now", lambda: now)
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    episode_id = _create_phase_one_episode(location_code="location_refresh", location_name="Location refresh")
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 5, 26, 7, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "user",
+            f"user:{account.id}",
+        )
+    finally:
+        db.close()
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert f'id="location-adherence-detail-{episode_id}-month-2026-05-26"' in response.text
+    assert 'name="applied_at" value="2026-05-26T18:00:00+00:00"' in response.text
+    csrf = _csrf_token(response.text)
+
+    posted = client.post(
+        "/dashboard/adherence/log-missing",
+        data={
+            "csrf_token": csrf,
+            "episode_id": str(episode_id),
+            "phase_number": "1",
+            "applied_at": "2026-05-26T18:00:00+00:00",
+            "return_to": "/dashboard",
+        },
+        follow_redirects=False,
+    )
+
+    assert posted.status_code == 303
+    refreshed = client.get("/dashboard")
+    assert refreshed.status_code == 200
+    assert f'id="location-adherence-detail-{episode_id}-month-2026-05-26"' in refreshed.text
+    assert 'name="applied_at" value="2026-05-26T18:00:00+00:00"' not in refreshed.text
+    assert 'data-date="2026-05-26"' in refreshed.text
+    assert 'data-status="completed"' in refreshed.text
+
+
+def test_location_info_backfill_restores_deleted_slot_instead_of_succeeding_noop(client, monkeypatch):
+    import app.adherence as adherence
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    now = datetime(2026, 5, 27, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(adherence, "utc_now", lambda: now)
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    episode_id = _create_phase_one_episode(location_code="restore_deleted_slot", location_name="Restore deleted slot")
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 5, 26, 7, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "system",
+            "test",
+        )
+        deleted = log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 5, 26, 18, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "system",
+            "test",
+        )
+        services.delete_application(db, account, deleted.id, datetime(2026, 5, 27, 9, tzinfo=timezone.utc), "user", f"user:{account.id}")
+        deleted_id = deleted.id
+    finally:
+        db.close()
+    _login(client)
+    dashboard = client.get("/dashboard")
+    csrf = _csrf_token(dashboard.text)
+
+    posted = client.post(
+        "/dashboard/adherence/log-missing",
+        data={
+            "csrf_token": csrf,
+            "episode_id": str(episode_id),
+            "phase_number": "1",
+            "applied_at": "2026-05-26T18:00:00+00:00",
+            "return_to": "/dashboard",
+        },
+        follow_redirects=False,
+    )
+
+    assert posted.status_code == 303
+    db = SessionLocal()
+    try:
+        restored = db.get(TreatmentApplication, deleted_id)
+        assert restored is not None
+        assert restored.is_deleted is False
+        assert restored.deleted_at is None
+        assert restored.notes == "Backfilled from adherence detail"
+        same_slot = (
+            db.query(TreatmentApplication)
+            .filter(TreatmentApplication.episode_id == episode_id, TreatmentApplication.applied_at == datetime(2026, 5, 26, 18, tzinfo=timezone.utc))
+            .all()
+        )
+        assert [application.id for application in same_slot] == [deleted_id]
+    finally:
+        db.close()
+    refreshed = client.get("/dashboard")
+    assert 'name="applied_at" value="2026-05-26T18:00:00+00:00"' not in refreshed.text
+    assert 'data-date="2026-05-26"' in refreshed.text
+    assert 'data-status="completed"' in refreshed.text
+
+    undo_token = _csrf_token(refreshed.text)
+    undo = client.post("/dashboard/treatments/undo-last", data={"csrf_token": undo_token}, follow_redirects=False)
+
+    assert undo.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.get(TreatmentApplication, deleted_id).is_deleted is False
+    finally:
+        db.close()
+
+
+def test_location_info_chain_uses_original_location_start_after_phase_advances(monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 28, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 28, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        subject = create_subject(db, account, "Child phase advanced")
+        location = create_location(db, account, "phase_advanced_po", "Po")
+        episode = create_episode(
+            db,
+            account,
+            subject.id,
+            location.id,
+            "v1",
+            datetime(2026, 4, 26, 17, 55, tzinfo=timezone.utc),
+            "user",
+            f"user:{account.id}",
+        )
+        healed = heal_episode(db, account, episode.id, datetime(2026, 4, 26, 17, 57, tzinfo=timezone.utc), "user", f"user:{account.id}")
+        phase_two = (
+            db.query(EpisodePhaseHistory)
+            .filter(EpisodePhaseHistory.episode_id == healed.id, EpisodePhaseHistory.phase_number == 2)
+            .one()
+        )
+        phase_three_start = datetime(2026, 5, 24, 17, 57, tzinfo=timezone.utc)
+        phase_two.ended_at = phase_three_start
+        healed.current_phase_number = 3
+        healed.phase_started_at = phase_three_start
+        healed.phase_due_end_at = calculate_phase_due_end_at(phase_three_start, 3)
+        db.add(
+            EpisodePhaseHistory(
+                episode_id=healed.id,
+                phase_number=3,
+                started_at=phase_three_start,
+                ended_at=None,
+                reason="auto_advance",
+            )
+        )
+        db.add(healed)
+        db.commit()
+
+        overview = read_model.build_dashboard_overview(db, account)
+        row = next(item for item in overview.active_locations if item.location_name == "Po")
+        month = next(item for item in row.location_adherence if item.range_key == "month")
+        statuses_by_date = {day.date: day.status for day in month.habit_chain}
+
+        assert statuses_by_date[date(2026, 5, 1)] != "pre_start"
+        assert statuses_by_date[date(2026, 5, 23)] != "pre_start"
+        assert any(day.status not in {"pre_start", "future"} for day in month.habit_chain)
+    finally:
+        db.close()
+
+
 def test_dashboard_backup_tab_exposes_import_export_controls(client):
     _login(client)
 
@@ -570,9 +824,9 @@ def test_dashboard_telegram_tab_saves_token_and_chat_ids(client, monkeypatch):
     assert response.status_code == 303
     refreshed = client.get("/dashboard?tab=settings&settings_tab=telegram")
     assert "Telegram Bot" in refreshed.text
-    assert "Token saved" in refreshed.text
+    assert "Ready to enable" in refreshed.text
     assert "@zema_bot" in refreshed.text
-    assert "Linked chat IDs: 111, 222" in refreshed.text
+    assert "Chat: 111, 222" in refreshed.text
     assert "Save Telegram settings" not in refreshed.text
     db = SessionLocal()
     try:
@@ -606,6 +860,8 @@ def test_dashboard_telegram_wizard_discovers_chats(client, monkeypatch):
         follow_redirects=False,
     )
     dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
+    assert "Open @zema_bot in Telegram" in dashboard.text
+    assert 'href="https://t.me/zema_bot"' in dashboard.text
     token = _csrf_token(dashboard.text)
 
     response = client.post("/dashboard/telegram/discover", data={"csrf_token": token}, follow_redirects=False)
@@ -613,8 +869,8 @@ def test_dashboard_telegram_wizard_discovers_chats(client, monkeypatch):
     assert response.status_code == 303
     assert response.headers["location"] == "/dashboard?tab=settings&settings_tab=telegram&telegram_chat_linked=1"
     refreshed = client.get("/dashboard?tab=settings&settings_tab=telegram&telegram_chat_linked=1")
-    assert "Telegram chat linked." in refreshed.text
-    assert "Linked chat IDs: 444" in refreshed.text
+    assert "Chat linked." in refreshed.text
+    assert "Chat: 444" in refreshed.text
     assert "Enable Bot" in refreshed.text
     db = SessionLocal()
     try:
@@ -660,6 +916,49 @@ def test_dashboard_telegram_discover_multiple_chats_requires_selection(client, m
     assert "Family" in response.text
     assert 'value="777"' in response.text
     assert "Use selected chat" in response.text
+    assert "chat · 444" not in response.text
+
+
+def test_dashboard_telegram_discovery_is_blocked_while_runtime_is_active(client, monkeypatch):
+    import app.telegram_settings as telegram_settings
+
+    called = False
+
+    def discover(_token):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(telegram_settings, "validate_bot_token", lambda _token: type("Bot", (), {"username": "zema_bot"})())
+    monkeypatch.setattr(telegram_settings, "discover_chats", discover)
+    _login(client)
+    dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
+    token = _csrf_token(dashboard.text)
+    client.post(
+        "/dashboard/telegram/token",
+        data={"csrf_token": token, "bot_token": "123456:test-token"},
+        follow_redirects=False,
+    )
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        from app.models import TelegramBotSettings
+
+        row = db.query(TelegramBotSettings).filter(TelegramBotSettings.account_id == account.id).one()
+        row.is_enabled = True
+        row.runtime_status = "active"
+        db.add(row)
+        db.commit()
+    finally:
+        db.close()
+    dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
+    token = _csrf_token(dashboard.text)
+
+    response = client.post("/dashboard/telegram/discover", data={"csrf_token": token})
+
+    assert response.status_code == 409
+    assert "Turn the bot off and wait until it stops before finding chats." in response.text
+    assert called is False
 
 
 def test_dashboard_telegram_token_error_stays_in_wizard(client, monkeypatch):
@@ -715,6 +1014,10 @@ def test_dashboard_telegram_enable_requires_chat_and_creates_api_key(client, mon
 
     assert enabled.status_code == 303
     assert enabled.headers["location"] == "/dashboard?tab=settings&settings_tab=telegram&telegram_enabled=1"
+    refreshed = client.get("/dashboard?tab=settings&settings_tab=telegram&telegram_enabled=1")
+    assert "Bot is starting." in refreshed.text
+    assert "Starting bot" in refreshed.text
+    assert "Starting bot. This can take a few seconds." in refreshed.text
     db = SessionLocal()
     try:
         account = db.query(Account).filter(Account.username == "admin").one()
@@ -722,10 +1025,56 @@ def test_dashboard_telegram_enable_requires_chat_and_creates_api_key(client, mon
 
         row = db.query(TelegramBotSettings).filter(TelegramBotSettings.account_id == account.id).one()
         assert row.is_enabled is True
+        assert row.runtime_status == "starting"
         assert row.api_key_id is not None
         assert db.get(AccountApiKey, row.api_key_id) is not None
     finally:
         db.close()
+
+
+def test_dashboard_telegram_active_status_hides_completed_wizard(client, monkeypatch):
+    import app.telegram_settings as telegram_settings
+
+    monkeypatch.setattr(telegram_settings, "validate_bot_token", lambda _token: type("Bot", (), {"username": "zema_bot"})())
+    _login(client)
+    dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
+    token = _csrf_token(dashboard.text)
+    client.post(
+        "/dashboard/telegram/token",
+        data={"csrf_token": token, "bot_token": "123456:test-token"},
+        follow_redirects=False,
+    )
+    dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
+    token = _csrf_token(dashboard.text)
+    client.post(
+        "/dashboard/telegram",
+        data={"csrf_token": token, "allowed_chat_ids": "111"},
+        follow_redirects=False,
+    )
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        from app.models import TelegramBotSettings
+
+        row = db.query(TelegramBotSettings).filter(TelegramBotSettings.account_id == account.id).one()
+        row.is_enabled = True
+        row.runtime_status = "active"
+        db.add(row)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/dashboard?tab=settings&settings_tab=telegram")
+
+    assert "Bot active" in response.text
+    assert "@zema_bot" in response.text
+    assert "Reset bot setup" in response.text
+    assert "Connect bot" not in response.text
+    assert "Open Telegram" not in response.text
+    assert "Enable Bot" not in response.text
+    assert "Advanced details" not in response.text
+    assert "Open Telegram and send /menu to test the bot." not in response.text
+    assert "Bot active. Open Telegram and send <code>/menu</code> to test it." not in response.text
 
 
 def test_dashboard_telegram_reset_deletes_token_chat_ids_and_api_key(client, monkeypatch):
@@ -763,6 +1112,7 @@ def test_dashboard_telegram_reset_deletes_token_chat_ids_and_api_key(client, mon
         db.close()
 
     dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
+    assert "Remove this Telegram bot setup and start over?" in dashboard.text
     token = _csrf_token(dashboard.text)
     reset = client.post("/dashboard/telegram/reset", data={"csrf_token": token}, follow_redirects=False)
 
@@ -778,10 +1128,10 @@ def test_dashboard_telegram_reset_deletes_token_chat_ids_and_api_key(client, mon
     finally:
         db.close()
     refreshed = client.get("/dashboard?tab=settings&settings_tab=telegram&telegram_reset=1")
-    assert "Telegram setup reset." in refreshed.text
-    assert "No token saved" in refreshed.text
+    assert "Bot setup reset." in refreshed.text
+    assert "Not connected" in refreshed.text
     assert "Check bot" in refreshed.text
-    assert "Reset Telegram setup" not in refreshed.text
+    assert "Reset bot setup" not in refreshed.text
 
 
 def test_dashboard_adherence_uses_rolling_taper_schedule_and_renders_habit_chain(client, monkeypatch):
@@ -817,6 +1167,79 @@ def test_dashboard_adherence_uses_rolling_taper_schedule_and_renders_habit_chain
     assert 'title="May 26' in response.text
     assert "not due" in response.text
     assert 'data-status="missed"' not in response.text
+
+
+def test_dashboard_adherence_day_detail_can_backfill_missing_treatment(client, monkeypatch):
+    import app.adherence as adherence
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    now = datetime(2026, 5, 27, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(adherence, "utc_now", lambda: now)
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    episode_id = _create_phase_one_episode(location_code="adherence_detail", location_name="Adherence detail")
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 5, 26, 7, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "user",
+            f"user:{account.id}",
+        )
+    finally:
+        db.close()
+    _login(client)
+
+    response = client.get("/dashboard?adherence_range=custom&from_date=2026-05-26&to_date=2026-05-26")
+
+    assert response.status_code == 200
+    assert 'data-adherence-detail-id="adherence-detail-2026-05-26"' in response.text
+    assert 'id="adherence-detail-dialog"' in response.text
+    assert 'id="adherence-detail-2026-05-26"' in response.text
+    assert "Logged" in response.text
+    assert "Missing" in response.text
+    assert "Adherence detail" in response.text
+    assert "Evening" in response.text
+    assert 'action="/dashboard/adherence/log-missing"' in response.text
+    assert 'name="applied_at" value="2026-05-26T18:00:00+00:00"' in response.text
+    csrf = _csrf_token(response.text)
+
+    posted = client.post(
+        "/dashboard/adherence/log-missing",
+        data={
+            "csrf_token": csrf,
+            "episode_id": str(episode_id),
+            "phase_number": "1",
+            "applied_at": "2026-05-26T18:00:00+00:00",
+            "return_to": "/dashboard?adherence_range=custom&from_date=2026-05-26&to_date=2026-05-26#adherence",
+        },
+        follow_redirects=False,
+    )
+
+    assert posted.status_code == 303
+    assert posted.headers["location"] == "/dashboard?adherence_range=custom&from_date=2026-05-26&to_date=2026-05-26#adherence"
+    db = SessionLocal()
+    try:
+        applications = (
+            db.query(TreatmentApplication)
+            .filter(TreatmentApplication.episode_id == episode_id)
+            .order_by(TreatmentApplication.applied_at.asc())
+            .all()
+        )
+        assert len(applications) == 2
+        assert applications[1].applied_at.replace(tzinfo=timezone.utc) == datetime(2026, 5, 26, 18, tzinfo=timezone.utc)
+        assert applications[1].phase_number_snapshot == 1
+        assert applications[1].notes == "Backfilled from adherence detail"
+    finally:
+        db.close()
 
 
 def test_dashboard_adherence_anchor_tooltips_and_not_due_green(client, monkeypatch):
@@ -879,6 +1302,37 @@ def test_dashboard_theme_toggle_sets_cookie(client):
     assert "Path=/dashboard" in cookie
 
 
+def test_dashboard_privacy_toggle_sets_cookie_and_masks_location_names(client):
+    _create_taper_episode(location_code="privacy_location", location_name="Sensitive Po")
+    _login(client)
+    current_view = "/dashboard?tab=settings&settings_tab=edit-locations"
+    dashboard = client.get(current_view)
+    csrf = _csrf_token(dashboard.text)
+
+    response = client.post(
+        "/dashboard/privacy",
+        data={"privacy_mode": "on", "return_to": current_view, "csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == current_view
+    cookie = response.headers["set-cookie"]
+    assert "zema_privacy=on" in cookie
+    assert "Path=/dashboard" in cookie
+
+    masked = client.get(current_view)
+
+    assert masked.status_code == 200
+    assert "Sensitive Po" not in masked.text
+    assert "S***********" in masked.text
+    assert 'name="display_name" value="S***********" disabled' in masked.text
+    assert "Disable privacy mode to edit this name." in masked.text
+    assert 'class="secondary-button compact-button" type="submit" disabled' in masked.text
+    assert 'aria-label="Disable privacy mode"' in masked.text
+    assert 'class="icon-button privacy-toggle active"' in masked.text
+
+
 def test_dashboard_topbar_is_fixed_and_contains_session_actions(client):
     _login(client)
 
@@ -890,10 +1344,15 @@ def test_dashboard_topbar_is_fixed_and_contains_session_actions(client):
     assert 'class="topbar-actions"' in response.text
     assert 'href="/dashboard?tab=settings"' in response.text
     assert 'aria-label="Undo last action"' in response.text
-    assert "↻" in response.text
+    assert 'class="button-icon"' in response.text
+    assert 'd="M9 14 4 9l5-5"' in response.text
+    assert "↻" not in response.text
     assert 'aria-label="Switch to light mode"' in response.text
+    assert 'aria-label="Enable privacy mode"' in response.text
     assert "Log out" in response.text
     assert "position: sticky" in css.text
+    assert ".button-icon" in css.text
+    assert ".privacy-toggle.active" in css.text
     assert "z-index" in css.text
 
 

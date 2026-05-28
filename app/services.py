@@ -690,6 +690,7 @@ def log_application(
     notes: str | None,
     actor_type: str,
     actor_id: str,
+    phase_number_snapshot: int | None = None,
 ) -> TreatmentApplication:
     normalized_treatment_type = treatment_type or "other"
     if normalized_treatment_type not in VALID_TREATMENT_TYPES:
@@ -703,7 +704,7 @@ def log_application(
         treatment_type=normalized_treatment_type,
         treatment_name=treatment_name,
         quantity_text=quantity_text,
-        phase_number_snapshot=episode.current_phase_number,
+        phase_number_snapshot=phase_number_snapshot or episode.current_phase_number,
         notes=notes,
     )
     db.add(application)
@@ -719,7 +720,7 @@ def log_application(
             "application_id": application.id,
             "applied_at": applied_at.isoformat(),
             "treatment_type": normalized_treatment_type,
-            "phase_number_snapshot": episode.current_phase_number,
+            "phase_number_snapshot": application.phase_number_snapshot,
             "treatment_name": treatment_name,
             "quantity_text": quantity_text,
             "notes": notes,
@@ -910,22 +911,28 @@ def _phase_one_slot_due_item(episode: EczemaEpisode, phase: TaperProtocolPhase, 
 
 def due_items(db: Session, account: Account, subject_id: int | None = None) -> list[dict]:
     episodes = list_episodes(db, account, subject_id=subject_id)
+    episode_ids = [episode.id for episode in episodes if episode.status != "obsolete"]
+    applications_by_episode: dict[int, list[TreatmentApplication]] = {episode_id: [] for episode_id in episode_ids}
+    if episode_ids:
+        applications = list(
+            db.execute(
+                select(TreatmentApplication)
+                .where(
+                    TreatmentApplication.episode_id.in_(episode_ids),
+                    TreatmentApplication.is_deleted.is_(False),
+                    TreatmentApplication.is_voided.is_(False),
+                )
+                .order_by(TreatmentApplication.episode_id.asc(), TreatmentApplication.applied_at.asc(), TreatmentApplication.id.asc())
+            ).scalars()
+        )
+        for application in applications:
+            applications_by_episode.setdefault(application.episode_id, []).append(application)
     items: list[dict] = []
     now = utc_now()
     for episode in episodes:
         if episode.status == "obsolete":
             continue
-        applications = list(
-            db.execute(
-                select(TreatmentApplication)
-                .where(
-                    TreatmentApplication.episode_id == episode.id,
-                    TreatmentApplication.is_deleted.is_(False),
-                    TreatmentApplication.is_voided.is_(False),
-                )
-                .order_by(TreatmentApplication.applied_at.asc(), TreatmentApplication.id.asc())
-            ).scalars()
-        )
+        applications = applications_by_episode.get(episode.id, [])
         last_application_at = applications[-1].applied_at if applications else None
         if episode.current_phase_number == 1:
             phase = get_protocol_phase(db, 1)

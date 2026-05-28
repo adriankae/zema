@@ -15,6 +15,13 @@ from app.core.time import utc_now
 from app.models import Account, AccountApiKey, TelegramBotSettings
 from czm_cli.telegram.setup import DiscoveredChat, discover_chats, validate_bot_token
 
+RUNTIME_STOPPED = "stopped"
+RUNTIME_STARTING = "starting"
+RUNTIME_ACTIVE = "active"
+RUNTIME_STOPPING = "stopping"
+RUNTIME_NEEDS_ATTENTION = "needs_attention"
+DISCOVERY_BLOCKING_STATUSES = {RUNTIME_STARTING, RUNTIME_ACTIVE, RUNTIME_STOPPING}
+
 
 def _fernet() -> Fernet:
     digest = hashlib.sha256(settings.jwt_secret.encode("utf-8")).digest()
@@ -38,7 +45,7 @@ def decrypt_secret(value: str | None) -> str | None:
 class TelegramSettingsView:
     configured: bool
     enabled: bool
-    running: bool
+    runtime_status: str
     bot_username: str | None
     allowed_chat_ids: list[int]
     allowed_user_ids: list[int]
@@ -57,6 +64,10 @@ class TelegramSettingsView:
         return 3
 
     @property
+    def setup_complete(self) -> bool:
+        return self.configured and bool(self.allowed_chat_ids) and self.enabled and self.runtime_status == RUNTIME_ACTIVE and not self.last_error
+
+    @property
     def allowed_chat_ids_text(self) -> str:
         return ", ".join(str(value) for value in self.allowed_chat_ids)
 
@@ -64,19 +75,63 @@ class TelegramSettingsView:
     def allowed_user_ids_text(self) -> str:
         return ", ".join(str(value) for value in self.allowed_user_ids)
 
+    @property
+    def telegram_url(self) -> str | None:
+        if not self.bot_username:
+            return None
+        return f"https://t.me/{self.bot_username}"
+
+    @property
+    def can_discover_chats(self) -> bool:
+        return self.configured and self.runtime_status not in DISCOVERY_BLOCKING_STATUSES and not self.enabled
+
+    @property
+    def status_label(self) -> str:
+        if not self.configured:
+            return "Not connected"
+        if self.last_error:
+            return "Needs attention"
+        if self.runtime_status == RUNTIME_ACTIVE:
+            return "Bot active"
+        if self.runtime_status == RUNTIME_STARTING or (self.enabled and self.runtime_status == RUNTIME_STOPPED):
+            return "Starting bot"
+        if self.runtime_status == RUNTIME_STOPPING:
+            return "Stopping bot"
+        if not self.allowed_chat_ids:
+            return "Waiting for /start"
+        if self.enabled:
+            return "Starting bot"
+        return "Ready to enable"
+
+    @property
+    def status_detail(self) -> str:
+        if not self.configured:
+            return "Paste the BotFather token to connect your bot."
+        if self.last_error:
+            return self.last_error
+        if self.runtime_status == RUNTIME_ACTIVE:
+            return "Open Telegram and send /menu to test the bot."
+        if self.runtime_status == RUNTIME_STARTING or (self.enabled and self.runtime_status == RUNTIME_STOPPED):
+            return "The Telegram container will pick this up in a few seconds."
+        if self.runtime_status == RUNTIME_STOPPING:
+            return "The bot is shutting down. Wait a moment before changing chats."
+        if not self.allowed_chat_ids:
+            return "Open the bot in Telegram, send /start, then find your chat."
+        return "Your chat is linked. Enable the bot when you are ready."
+
 
 def get_telegram_settings(db: Session, account: Account) -> TelegramBotSettings | None:
     return db.execute(select(TelegramBotSettings).where(TelegramBotSettings.account_id == account.id)).scalar_one_or_none()
 
 
-def telegram_settings_view(db: Session, account: Account, *, running: bool = False) -> TelegramSettingsView:
+def telegram_settings_view(db: Session, account: Account) -> TelegramSettingsView:
     row = get_telegram_settings(db, account)
     if row is None:
-        return TelegramSettingsView(False, False, running, None, [], [], True, False, None, [])
+        return TelegramSettingsView(False, False, RUNTIME_STOPPED, None, [], [], True, False, None, [])
     return TelegramSettingsView(
         configured=bool(row.bot_token_encrypted),
         enabled=row.is_enabled,
-        running=running,
+        runtime_status=row.runtime_status or RUNTIME_STOPPED,
         bot_username=row.bot_username,
         allowed_chat_ids=list(row.allowed_chat_ids or []),
         allowed_user_ids=list(row.allowed_user_ids or []),
@@ -118,11 +173,14 @@ def save_telegram_settings(
     if row is None:
         row = TelegramBotSettings(account_id=account.id, allowed_chat_ids=[], allowed_user_ids=[])
         db.add(row)
+    elif (row.is_enabled or (row.runtime_status or RUNTIME_STOPPED) in DISCOVERY_BLOCKING_STATUSES) and allowed_chat_ids != list(row.allowed_chat_ids or []):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Turn the bot off and wait until it stops before changing chats.")
     cleaned_token = bot_token.strip() if bot_token else ""
     if cleaned_token:
         row.bot_token_encrypted = encrypt_secret(cleaned_token)
         row.bot_username = None
         row.last_error = None
+        row.runtime_status = RUNTIME_STOPPED
     row.allowed_chat_ids = allowed_chat_ids
     row.allowed_user_ids = allowed_user_ids
     row.allow_writes = allow_writes
@@ -148,10 +206,15 @@ def save_telegram_bot_token(db: Session, account: Account, bot_token: str) -> Te
     if row is None:
         row = TelegramBotSettings(account_id=account.id, allowed_chat_ids=[], allowed_user_ids=[])
         db.add(row)
+    elif row.is_enabled or (row.runtime_status or RUNTIME_STOPPED) in DISCOVERY_BLOCKING_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Turn the bot off and wait until it stops before replacing the token.")
     row.bot_token_encrypted = encrypt_secret(cleaned_token)
     row.bot_username = bot.username
+    row.allowed_chat_ids = []
+    row.allowed_user_ids = []
     row.last_error = None
     row.is_enabled = False
+    row.runtime_status = RUNTIME_STOPPED
     row.updated_at = utc_now()
     db.add(row)
     db.commit()
@@ -164,10 +227,12 @@ def discover_telegram_chats(db: Session, account: Account) -> list[DiscoveredCha
     token = decrypt_secret(row.bot_token_encrypted if row else None)
     if not token:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="save a bot token first")
+    if row and (row.is_enabled or (row.runtime_status or RUNTIME_STOPPED) in DISCOVERY_BLOCKING_STATUSES):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Turn the bot off and wait until it stops before finding chats.")
     try:
         return discover_chats(token)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Telegram could not find chats yet. Open the bot, send /start, then try again. ({exc})") from exc
 
 
 def set_telegram_enabled(db: Session, account: Account, enabled: bool) -> TelegramBotSettings:
@@ -180,6 +245,7 @@ def set_telegram_enabled(db: Session, account: Account, enabled: bool) -> Telegr
         ensure_telegram_api_key(db, account, row)
     row.is_enabled = enabled
     row.last_error = None
+    row.runtime_status = RUNTIME_STARTING if enabled else RUNTIME_STOPPING
     row.updated_at = utc_now()
     db.add(row)
     db.commit()

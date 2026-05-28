@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.adherence import list_adherence_rows, summarize_adherence
 from app.core.config import settings
 from app.core.time import deployment_tz, local_date, local_midnight, to_local, utc_now
-from app.models import Account, BodyLocation, EczemaEpisode, Subject, TaperProtocolPhase, TreatmentApplication
+from app.models import Account, BodyLocation, EczemaEpisode, EpisodePhaseHistory, Subject, TaperProtocolPhase, TreatmentApplication
 from app.services import catch_up_episode_phases, due_items, get_last_successful_phase_catch_up, list_episodes
 
 
@@ -32,6 +32,32 @@ class DashboardEpisodeRow:
     applications_completed_today: int = 0
     applications_expected_today: int = 0
     image_url: str | None = None
+    last_phase_change_at: datetime | None = None
+    next_phase_change_at: datetime | None = None
+    location_adherence: tuple["DashboardAdherence", ...] = ()
+
+
+@dataclass(frozen=True)
+class DashboardAdherenceLoggedItem:
+    location_name: str
+    phase_number: int
+    logged_at: datetime
+
+
+@dataclass(frozen=True)
+class DashboardAdherenceMissingItem:
+    episode_id: int
+    location_name: str
+    phase_number: int
+    label: str
+    suggested_at: datetime
+
+
+@dataclass(frozen=True)
+class DashboardAdherenceDayDetail:
+    date: date
+    logged: tuple[DashboardAdherenceLoggedItem, ...]
+    missing: tuple[DashboardAdherenceMissingItem, ...]
 
 
 @dataclass(frozen=True)
@@ -39,6 +65,7 @@ class DashboardHabitDay:
     date: date
     status: str
     is_today: bool
+    detail: DashboardAdherenceDayDetail | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +94,7 @@ class DashboardAdherence:
     score: float | None
     missed_days: int
     partial_days: int
+    range_key: str = ""
     habit_chain: tuple[DashboardHabitDay, ...] = ()
 
     @property
@@ -97,21 +125,27 @@ def build_dashboard_overview(db: Session, account: Account, *, adherence_range: 
     due_ids = {item["episode_id"] for item in due_raw}
     subjects = _subjects_by_id(db, account)
     locations = _locations_by_id(db, account)
-    applications = _applications_by_episode(db, [episode.id for episode in list_episodes(db, account)])
-
     episodes = [episode for episode in list_episodes(db, account) if episode.status != "obsolete"]
-    due = [_row_from_due_item(item, episodes, subjects, locations) for item in due_raw]
+    episode_ids = [episode.id for episode in episodes]
+    applications = _applications_by_episode(db, episode_ids)
+    phase_changes = _last_phase_changes_by_episode(db, episode_ids)
+    selected_adherence_range = _resolve_adherence_range(db, account, adherence_range, from_date, to_date)
+    location_adherence = {
+        location_id: _location_adherence_summaries(db, account, location_id)
+        for location_id in {episode.location_id for episode in episodes}
+    }
+
+    due = [_row_from_due_item(item, episodes, subjects, locations, phase_changes, location_adherence) for item in due_raw]
     upcoming = [
-        _row_from_episode(episode, subjects, locations, applications.get(episode.id, []))
+        _row_from_episode(episode, subjects, locations, applications.get(episode.id, []), phase_changes, location_adherence)
         for episode in episodes
         if episode.id not in due_ids
     ]
     upcoming = sorted(upcoming, key=lambda row: (row.next_due_at is None, row.next_due_at or datetime.max.replace(tzinfo=timezone.utc), row.location_name))
     active_locations = sorted(
-        [_row_from_episode(episode, subjects, locations, applications.get(episode.id, [])) for episode in episodes],
+        [_row_from_episode(episode, subjects, locations, applications.get(episode.id, []), phase_changes, location_adherence) for episode in episodes],
         key=lambda row: row.location_name,
     )
-    selected_adherence_range = _resolve_adherence_range(db, account, adherence_range, from_date, to_date)
     return DashboardOverview(
         due=due,
         upcoming=upcoming,
@@ -155,11 +189,32 @@ def _applications_by_episode(db: Session, episode_ids: list[int]) -> dict[int, l
     return grouped
 
 
+def _last_phase_changes_by_episode(db: Session, episode_ids: list[int]) -> dict[int, datetime]:
+    if not episode_ids:
+        return {}
+    rows = list(
+        db.execute(
+            select(EpisodePhaseHistory)
+            .where(
+                EpisodePhaseHistory.episode_id.in_(episode_ids),
+                EpisodePhaseHistory.reason != "episode_created",
+            )
+            .order_by(EpisodePhaseHistory.episode_id.asc(), EpisodePhaseHistory.started_at.desc(), EpisodePhaseHistory.id.desc())
+        ).scalars()
+    )
+    changes: dict[int, datetime] = {}
+    for row in rows:
+        changes.setdefault(row.episode_id, row.started_at)
+    return changes
+
+
 def _row_from_due_item(
     item: dict,
     episodes: list[EczemaEpisode],
     subjects: dict[int, Subject],
     locations: dict[int, BodyLocation],
+    phase_changes: dict[int, datetime],
+    location_adherence: dict[int, tuple[DashboardAdherence, ...]],
 ) -> DashboardEpisodeRow:
     episode = next(episode for episode in episodes if episode.id == item["episode_id"])
     location = locations[episode.location_id]
@@ -183,6 +238,9 @@ def _row_from_due_item(
         applications_completed_today=item.get("applications_completed_today") or 0,
         applications_expected_today=item.get("applications_expected_today") or 0,
         image_url=_image_url(location),
+        last_phase_change_at=phase_changes.get(episode.id),
+        next_phase_change_at=episode.phase_due_end_at,
+        location_adherence=location_adherence.get(location.id),
     )
 
 
@@ -191,6 +249,8 @@ def _row_from_episode(
     subjects: dict[int, Subject],
     locations: dict[int, BodyLocation],
     applications: list[TreatmentApplication],
+    phase_changes: dict[int, datetime],
+    location_adherence: dict[int, tuple[DashboardAdherence, ...]],
 ) -> DashboardEpisodeRow:
     location = locations[episode.location_id]
     last_application_at = applications[-1].applied_at if applications else None
@@ -209,6 +269,9 @@ def _row_from_episode(
         next_due_slot=_phase_one_slot_for_datetime(next_due_at) if is_phase_one else None,
         last_application_slot=_phase_one_slot_for_datetime(last_application_at) if is_phase_one else None,
         image_url=_image_url(location),
+        last_phase_change_at=phase_changes.get(episode.id),
+        next_phase_change_at=episode.phase_due_end_at,
+        location_adherence=location_adherence.get(location.id),
     )
 
 
@@ -320,6 +383,7 @@ def _adherence_summaries(db: Session, account: Account, selected_range: Dashboar
     usage_start = _earliest_episode_date(db, account)
     rows = list_adherence_rows(db, account, selected_range.from_date, selected_range.to_date, persisted=False)
     summary = summarize_adherence(rows)
+    details = _adherence_day_details(db, account, rows, selected_range.from_date, selected_range.to_date, today)
     return [
         DashboardAdherence(
             label=selected_range.label,
@@ -330,12 +394,235 @@ def _adherence_summaries(db: Session, account: Account, selected_range: Dashboar
             score=summary.adherence_score,
             missed_days=summary.missed_day_count,
             partial_days=summary.partial_day_count,
-            habit_chain=_habit_chain(rows, selected_range.from_date, selected_range.to_date, today, usage_start),
+            range_key=selected_range.key,
+            habit_chain=_habit_chain(rows, selected_range.from_date, selected_range.to_date, today, usage_start, details),
         )
     ]
 
 
-def _habit_chain(rows, from_date: date, to_date: date, today: date, usage_start: date | None) -> tuple[DashboardHabitDay, ...]:
+def _location_adherence_summaries(db: Session, account: Account, location_id: int) -> tuple[DashboardAdherence, ...]:
+    today = local_date(utc_now())
+    usage_start = _earliest_location_episode_date(db, account, location_id)
+    all_start = usage_start or today
+    ranges = (
+        DashboardAdherenceRange("week", "Week", today - timedelta(days=6), today),
+        DashboardAdherenceRange("month", "Month", today - timedelta(days=29), today),
+        DashboardAdherenceRange("year", "Year", today - timedelta(days=364), today),
+        DashboardAdherenceRange("all", "All time", all_start, today),
+    )
+    return tuple(_location_adherence_summary(db, account, location_id, selected_range, today, usage_start) for selected_range in ranges)
+
+
+def _location_adherence_summary(
+    db: Session,
+    account: Account,
+    location_id: int,
+    selected_range: DashboardAdherenceRange,
+    today: date,
+    usage_start: date | None,
+) -> DashboardAdherence:
+    rows = list_adherence_rows(db, account, selected_range.from_date, selected_range.to_date, location_id=location_id, persisted=False)
+    summary = summarize_adherence(rows)
+    details = _adherence_day_details(db, account, rows, selected_range.from_date, selected_range.to_date, today)
+    return DashboardAdherence(
+        label=selected_range.label,
+        from_date=selected_range.from_date,
+        to_date=selected_range.to_date,
+        expected=summary.expected_total,
+        completed=summary.completed_total,
+        score=summary.adherence_score,
+        missed_days=summary.missed_day_count,
+        partial_days=0,
+        range_key=selected_range.key,
+        habit_chain=_location_habit_chain(rows, selected_range.from_date, selected_range.to_date, today, usage_start, details),
+    )
+
+
+def _earliest_location_episode_date(db: Session, account: Account, location_id: int) -> date | None:
+    episodes = [episode for episode in list_episodes(db, account) if episode.status != "obsolete" and episode.location_id == location_id]
+    if not episodes:
+        return None
+    episode_ids = [episode.id for episode in episodes]
+    history_starts = list(
+        db.execute(
+            select(EpisodePhaseHistory.started_at).where(
+                EpisodePhaseHistory.episode_id.in_(episode_ids),
+                EpisodePhaseHistory.reason == "episode_created",
+            )
+        ).scalars()
+    )
+    values = [local_date(started_at) for started_at in history_starts]
+    if not values:
+        values = [local_date(episode.phase_started_at) for episode in episodes]
+    return min(values) if values else None
+
+
+def _location_habit_chain(
+    rows,
+    from_date: date,
+    to_date: date,
+    today: date,
+    usage_start: date | None,
+    details: dict[date, DashboardAdherenceDayDetail] | None = None,
+) -> tuple[DashboardHabitDay, ...]:
+    by_date: dict[date, list] = {}
+    for row in rows:
+        by_date.setdefault(row.date, []).append(row)
+
+    days: list[DashboardHabitDay] = []
+    current = from_date
+    while current <= to_date:
+        if usage_start is not None and current < usage_start:
+            status = "pre_start"
+        else:
+            day_rows = by_date.get(current, [])
+            statuses = {row.status for row in day_rows}
+            if "completed" in statuses:
+                status = "completed"
+            elif current == today and "missed" in statuses:
+                status = "due"
+            elif "missed" in statuses or "partial" in statuses:
+                status = "missed"
+            elif "future" in statuses:
+                status = "future"
+            else:
+                status = "not_due"
+        days.append(DashboardHabitDay(date=current, status=status, is_today=current == today, detail=details.get(current) if details else None))
+        current += timedelta(days=1)
+    return tuple(days)
+
+
+def _adherence_day_details(
+    db: Session,
+    account: Account,
+    rows,
+    from_date: date,
+    to_date: date,
+    today: date,
+) -> dict[date, DashboardAdherenceDayDetail]:
+    row_list = list(rows)
+    episode_ids = sorted({row.episode_id for row in row_list})
+    if not episode_ids:
+        return {}
+    episodes = {episode.id: episode for episode in list_episodes(db, account) if episode.id in episode_ids}
+    locations = _locations_by_id(db, account)
+    applications = _applications_by_episode_date(db, episode_ids, from_date, to_date)
+
+    details: dict[date, DashboardAdherenceDayDetail] = {}
+    for date_value in _iter_dates(from_date, to_date):
+        day_rows = [row for row in row_list if row.date == date_value]
+        logged: list[DashboardAdherenceLoggedItem] = []
+        missing: list[DashboardAdherenceMissingItem] = []
+        for row in day_rows:
+            episode = episodes.get(row.episode_id)
+            location = locations.get(row.location_id)
+            if episode is None or location is None:
+                continue
+            location_name = location.display_name
+            day_applications = applications.get((row.episode_id, date_value), ())
+            logged.extend(
+                DashboardAdherenceLoggedItem(
+                    location_name=location_name,
+                    phase_number=application.phase_number_snapshot,
+                    logged_at=application.applied_at,
+                )
+                for application in day_applications
+            )
+            if date_value > today:
+                continue
+            missing_count = max(row.expected_applications - row.credited_applications, 0)
+            if missing_count <= 0:
+                continue
+            missing.extend(_missing_items_for_row(row, location_name, missing_count, day_applications))
+        details[date_value] = DashboardAdherenceDayDetail(
+            date=date_value,
+            logged=tuple(sorted(logged, key=lambda item: (item.location_name, item.logged_at))),
+            missing=tuple(sorted(missing, key=lambda item: (item.location_name, item.suggested_at))),
+        )
+    return details
+
+
+def _applications_by_episode_date(
+    db: Session,
+    episode_ids: list[int],
+    from_date: date,
+    to_date: date,
+) -> dict[tuple[int, date], tuple[TreatmentApplication, ...]]:
+    if not episode_ids:
+        return {}
+    start_at = local_midnight(from_date)
+    end_at = local_midnight(to_date + timedelta(days=1))
+    rows = list(
+        db.execute(
+            select(TreatmentApplication)
+            .where(
+                TreatmentApplication.episode_id.in_(episode_ids),
+                TreatmentApplication.applied_at >= start_at,
+                TreatmentApplication.applied_at < end_at,
+                TreatmentApplication.is_deleted.is_(False),
+                TreatmentApplication.is_voided.is_(False),
+            )
+            .order_by(TreatmentApplication.episode_id.asc(), TreatmentApplication.applied_at.asc(), TreatmentApplication.id.asc())
+        ).scalars()
+    )
+    grouped: dict[tuple[int, date], list[TreatmentApplication]] = {}
+    for application in rows:
+        grouped.setdefault((application.episode_id, local_date(application.applied_at)), []).append(application)
+    return {key: tuple(value) for key, value in grouped.items()}
+
+
+def _missing_items_for_row(row, location_name: str, missing_count: int, applications: tuple[TreatmentApplication, ...]) -> tuple[DashboardAdherenceMissingItem, ...]:
+    if row.phase_number == 1:
+        labels_and_times = _missing_phase_one_slots(row.date, row.expected_applications, applications)
+    else:
+        labels_and_times = [("Treatment", _local_datetime(row.date, time(12, 0)))]
+    return tuple(
+        DashboardAdherenceMissingItem(
+            episode_id=row.episode_id,
+            location_name=location_name,
+            phase_number=row.phase_number,
+            label=label,
+            suggested_at=suggested_at,
+        )
+        for label, suggested_at in labels_and_times[:missing_count]
+    )
+
+
+def _missing_phase_one_slots(date_value: date, expected_applications: int, applications: tuple[TreatmentApplication, ...]) -> list[tuple[str, datetime]]:
+    morning_start = _local_datetime(date_value, time(8, 0))
+    cutoff = _local_datetime(date_value, time(14, 0))
+    evening_start = _local_datetime(date_value, time(18, 0))
+    has_morning = any(to_local(application.applied_at) < to_local(cutoff) for application in applications if application.phase_number_snapshot in {None, 1})
+    has_evening = any(to_local(application.applied_at) >= to_local(cutoff) for application in applications if application.phase_number_snapshot in {None, 1})
+    missing: list[tuple[str, datetime]] = []
+    if expected_applications == 1 and not has_morning and not has_evening:
+        return [("Evening", evening_start)]
+    if not has_morning:
+        missing.append(("Morning", morning_start))
+    if not has_evening:
+        missing.append(("Evening", evening_start))
+    return missing
+
+
+def _local_datetime(date_value: date, time_value: time) -> datetime:
+    return datetime.combine(date_value, time_value, tzinfo=deployment_tz()).astimezone(timezone.utc)
+
+
+def _iter_dates(from_date: date, to_date: date):
+    current = from_date
+    while current <= to_date:
+        yield current
+        current += timedelta(days=1)
+
+
+def _habit_chain(
+    rows,
+    from_date: date,
+    to_date: date,
+    today: date,
+    usage_start: date | None,
+    details: dict[date, DashboardAdherenceDayDetail] | None = None,
+) -> tuple[DashboardHabitDay, ...]:
     by_date: dict[date, list] = {}
     for row in rows:
         by_date.setdefault(row.date, []).append(row)
@@ -360,6 +647,6 @@ def _habit_chain(rows, from_date: date, to_date: date, today: date, usage_start:
                 status = "future"
             else:
                 status = "not_due"
-        days.append(DashboardHabitDay(date=current, status=status, is_today=current == today))
+        days.append(DashboardHabitDay(date=current, status=status, is_today=current == today, detail=details.get(current) if details else None))
         current += timedelta(days=1)
     return tuple(days)

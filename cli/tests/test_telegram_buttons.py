@@ -228,7 +228,7 @@ def test_due_callback_includes_log_buttons_when_writes_enabled():
     assert "Next phase change: 03.05." in query.message.replies[0][0]
     assert query.message.replies[0][2] == b"image-bytes"
     labels = [button.text for row in query.message.replies[0][1].inline_keyboard for button in row]
-    assert labels == ["Log application", "Open menu"]
+    assert labels == ["Done", "Open menu"]
     assert ("DOWNLOAD", "/locations/2/image", None) in client.requests
 
 
@@ -400,7 +400,7 @@ def test_quick_log_button_posts_application():
     run(handle_callback(update, None, ctx))
     assert query.answered is True
     assert ("POST", "/applications", {"episode_id": 12}) in client.requests
-    assert query.edits[0][0] == "Logged application for 'Left elbow'"
+    assert query.edits[0][0] == "Marked Left elbow done."
     keyboard = query.edits[0][1]
     assert isinstance(keyboard, InlineKeyboardMarkup)
     assert keyboard.inline_keyboard[0][0].text == "Undo"
@@ -416,7 +416,7 @@ def test_quick_log_undo_button_deletes_application():
     run(handle_callback(update, None, ctx))
     assert query.answered is True
     assert ("DELETE", "/applications/1", None) in client.requests
-    assert query.edits[0][0] == "Undid last application log."
+    assert query.edits[0][0] == "Removed that log."
     assert isinstance(query.edits[0][1], InlineKeyboardMarkup)
 
 

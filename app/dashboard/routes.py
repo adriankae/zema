@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 import re
 import unicodedata
@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -29,7 +30,7 @@ from app.dashboard.read_model import build_dashboard_overview
 from app.import_export import export_account_data, import_account_data
 from app.location_images import get_location_image_file, store_location_image
 from app.models import Account, AccountApiKey, BodyLocation, EczemaEpisode, EpisodeEvent, EpisodePhaseHistory, Subject, TreatmentApplication
-from app.services import authenticate_user, calculate_phase_due_end_at, catch_up_episode_phases, create_episode, create_location, create_subject, delete_application, delete_location, due_items, get_location, get_subject, heal_episode, issue_login_token, log_application, relapse_episode, update_account_credentials
+from app.services import authenticate_user, calculate_phase_due_end_at, catch_up_episode_phases, create_episode, create_event, create_location, create_subject, delete_application, delete_location, due_items, get_location, get_subject, heal_episode, issue_login_token, log_application, relapse_episode, update_account_credentials
 from app.telegram_settings import (
     discover_telegram_chats,
     parse_int_list,
@@ -46,6 +47,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 ASSET_DIR = Path(__file__).parent / "static"
 THEME_COOKIE = "zema_theme"
 THEME_PATH = SESSION_PATH
+PRIVACY_COOKIE = "zema_privacy"
 OVERVIEW_TAB = "overview"
 SETTINGS_TAB = "settings"
 SETTINGS_TABS = {"account", "subject", "add-location", "edit-locations", "backup", "telegram"}
@@ -70,9 +72,32 @@ templates.env.filters["zdt"] = _format_datetime
 templates.env.filters["zdate"] = _format_date
 
 
+def _mask_display_name(value: str | None, privacy_mode: bool = False) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    if not privacy_mode or text == "":
+        return text
+    return text[:1] + ("*" * max(len(text) - 1, 0))
+
+
+templates.env.filters["privacy_name"] = _mask_display_name
+
 
 def _dashboard_theme(request: Request) -> str:
     return "light" if request.cookies.get(THEME_COOKIE) == "light" else "dark"
+
+
+def _privacy_mode(request: Request) -> bool:
+    return request.cookies.get(PRIVACY_COOKIE) == "on"
+
+
+def _dashboard_return_target(value: str | None, default: str = "/dashboard") -> str:
+    if value in {"/dashboard", "/dashboard/"}:
+        return value
+    if value and (value.startswith("/dashboard?") or value.startswith("/dashboard#") or value.startswith("/dashboard/")):
+        return value
+    return default
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -110,15 +135,15 @@ def _success_message(request: Request) -> str | None:
     if request.query_params.get("imported") == "1":
         return "Import complete. Tracking data was replaced from the backup file."
     if request.query_params.get("telegram_saved") == "1":
-        return "Telegram settings saved."
+        return "Bot connected."
     if request.query_params.get("telegram_enabled") == "1":
-        return "Telegram bot enabled."
+        return "Bot is starting."
     if request.query_params.get("telegram_disabled") == "1":
-        return "Telegram bot disabled."
+        return "Bot is stopping."
     if request.query_params.get("telegram_reset") == "1":
-        return "Telegram setup reset."
+        return "Bot setup reset."
     if request.query_params.get("telegram_chat_linked") == "1":
-        return "Telegram chat linked."
+        return "Chat linked."
     return None
 
 
@@ -153,6 +178,7 @@ def _telegram_settings_html(
             "overview": _overview_from_request(db, account, request),
             "csrf_token": issue_csrf_token(account),
             "theme": _dashboard_theme(request),
+            "privacy_mode": _privacy_mode(request),
             "active_tab": SETTINGS_TAB,
             "active_settings_tab": "telegram",
             "error": error,
@@ -176,6 +202,7 @@ def dashboard_home(request: Request, db: Session = Depends(get_db)):
             "overview": overview,
             "csrf_token": issue_csrf_token(account),
             "theme": _dashboard_theme(request),
+            "privacy_mode": _privacy_mode(request),
             "active_tab": _active_tab(request),
             "active_settings_tab": _active_settings_tab(request),
             "success_message": _success_message(request),
@@ -408,6 +435,7 @@ def dashboard_discover_telegram_chats(
             "overview": overview,
             "csrf_token": issue_csrf_token(account),
             "theme": _dashboard_theme(request),
+            "privacy_mode": _privacy_mode(request),
             "active_tab": SETTINGS_TAB,
             "active_settings_tab": "telegram",
             "telegram": telegram,
@@ -486,6 +514,32 @@ def dashboard_theme(
     )
     return response
 
+
+@router.post("/privacy")
+def dashboard_privacy(
+    request: Request,
+    privacy_mode: str = Form(...),
+    return_to: str = Form(default="/dashboard"),
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    selected = "on" if privacy_mode == "on" else "off"
+    response = RedirectResponse(_dashboard_return_target(return_to), status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        PRIVACY_COOKIE,
+        selected,
+        httponly=True,
+        secure=dashboard_cookie_secure(),
+        samesite="lax",
+        path=SESSION_PATH,
+    )
+    return response
+
+
 @router.post("/logout")
 def dashboard_logout(
     request: Request,
@@ -527,6 +581,7 @@ def dashboard_log_treatment(
                 "overview": overview,
                 "csrf_token": issue_csrf_token(account),
                 "theme": _dashboard_theme(request),
+                "privacy_mode": _privacy_mode(request),
                 "active_tab": _active_tab(request),
                 "active_settings_tab": _active_settings_tab(request),
                 "error": "This form expired. Reload and try again.",
@@ -599,6 +654,7 @@ def dashboard_log_all_due_treatments(
                 "overview": overview,
                 "csrf_token": issue_csrf_token(account),
                 "theme": _dashboard_theme(request),
+                "privacy_mode": _privacy_mode(request),
                 "active_tab": _active_tab(request),
                 "active_settings_tab": _active_settings_tab(request),
                 "error": "This form expired. Reload and try again.",
@@ -621,6 +677,107 @@ def dashboard_log_all_due_treatments(
             f"user:{account.id}",
         )
     return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/adherence/log-missing")
+def dashboard_log_missing_adherence(
+    request: Request,
+    episode_id: int = Form(...),
+    applied_at: str = Form(...),
+    phase_number: int = Form(...),
+    return_to: str = Form(default="/dashboard#adherence"),
+    csrf_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    account = load_dashboard_account(request, db)
+    if account is None:
+        return _redirect_to_login()
+    require_valid_csrf(csrf_token, account)
+    try:
+        parsed_applied_at = datetime.fromisoformat(applied_at)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid applied_at")
+    if parsed_applied_at.tzinfo is None:
+        parsed_applied_at = parsed_applied_at.replace(tzinfo=timezone.utc)
+    try:
+        _log_or_restore_missing_adherence(
+            db,
+            account,
+            episode_id,
+            parsed_applied_at.astimezone(timezone.utc),
+            phase_number,
+        )
+    except IntegrityError:
+        db.rollback()
+    target = _dashboard_return_target(return_to, "/dashboard#adherence")
+    return RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _log_or_restore_missing_adherence(
+    db: Session,
+    account: Account,
+    episode_id: int,
+    applied_at: datetime,
+    phase_number: int,
+) -> TreatmentApplication:
+    existing = db.execute(
+        select(TreatmentApplication)
+        .join(EczemaEpisode, EczemaEpisode.id == TreatmentApplication.episode_id)
+        .where(
+            EczemaEpisode.account_id == account.id,
+            TreatmentApplication.episode_id == episode_id,
+            TreatmentApplication.applied_at == applied_at,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing is None:
+        return log_application(
+            db,
+            account,
+            episode_id,
+            applied_at,
+            "steroid",
+            None,
+            None,
+            "Backfilled from adherence detail",
+            "system",
+            f"adherence-backfill:user:{account.id}",
+            phase_number_snapshot=phase_number,
+        )
+    if not existing.is_deleted and not existing.is_voided:
+        return existing
+    existing.is_deleted = False
+    existing.deleted_at = None
+    existing.is_voided = False
+    existing.voided_at = None
+    existing.treatment_type = "steroid"
+    existing.treatment_name = None
+    existing.quantity_text = None
+    existing.notes = "Backfilled from adherence detail"
+    existing.phase_number_snapshot = phase_number
+    existing.updated_at = utc_now()
+    db.add(existing)
+    create_event(
+        db,
+        episode_id=existing.episode_id,
+        event_type="application_logged",
+        actor_type="system",
+        actor_id=f"adherence-backfill:user:{account.id}",
+        occurred_at=applied_at,
+        payload={
+            "application_id": existing.id,
+            "applied_at": applied_at.isoformat(),
+            "treatment_type": existing.treatment_type,
+            "phase_number_snapshot": existing.phase_number_snapshot,
+            "treatment_name": existing.treatment_name,
+            "quantity_text": existing.quantity_text,
+            "notes": existing.notes,
+            "restored": True,
+        },
+    )
+    db.commit()
+    db.refresh(existing)
+    return existing
 
 
 @router.post("/treatments/undo-last")

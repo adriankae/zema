@@ -8,6 +8,7 @@
   --accent: #0a84ff;
   --ok: #30d158;
   --warn: #ff9f0a;
+  --danger: #ff453a;
   --field: #101015;
   --soft: rgba(255, 255, 255, 0.07);
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
@@ -23,6 +24,7 @@
   --accent: #0071e3;
   --ok: #248a3d;
   --warn: #b25000;
+  --danger: #c21f32;
   --field: #ffffff;
   --soft: #e8e8ed;
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.08);
@@ -250,6 +252,17 @@ h3 {
   min-width: 0;
 }
 
+.location-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.location-title-row h3 {
+  min-width: 0;
+}
+
 .location-image,
 .location-initial {
   width: 52px;
@@ -391,6 +404,42 @@ button,
   padding: 0;
 }
 
+.button-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.mini-icon-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.mini-icon-button:hover {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.privacy-toggle.active {
+  color: var(--text);
+  background: rgba(10, 132, 255, 0.16);
+  border-color: rgba(10, 132, 255, 0.45);
+}
+
+.privacy-edit-note {
+  grid-column: 1 / -1;
+}
+
 .compact-button {
   min-height: 38px;
 }
@@ -440,6 +489,12 @@ button,
   background: var(--bg);
   padding: 9px 12px;
   font-weight: 700;
+}
+
+.location-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .location-cloud small {
@@ -523,12 +578,20 @@ button,
 }
 
 .habit-dot {
+  display: block;
   width: 100%;
   min-width: 0;
+  min-height: 0;
   aspect-ratio: 1;
   border-radius: 7px;
   background: var(--soft);
   border: 1px solid var(--line);
+  padding: 0;
+  cursor: pointer;
+}
+
+.habit-dot:hover {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .habit-reference {
@@ -721,6 +784,10 @@ button,
   margin: 0;
 }
 
+.telegram-status-detail {
+  margin-top: 8px;
+}
+
 .telegram-wizard {
   display: grid;
   gap: 14px;
@@ -775,6 +842,17 @@ button,
   margin: 0;
 }
 
+.telegram-open-link {
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+}
+
+.long-token {
+  overflow-wrap: anywhere;
+}
+
 .radio-card {
   display: flex;
   gap: 10px;
@@ -792,6 +870,12 @@ button,
 .radio-card span {
   display: grid;
   gap: 4px;
+  min-width: 0;
+}
+
+.radio-card strong,
+.radio-card small {
+  overflow-wrap: anywhere;
 }
 
 .radio-card small {
@@ -802,6 +886,11 @@ button,
   border: 1px dashed var(--line);
   border-radius: 16px;
   padding: 14px;
+}
+
+.telegram-runtime-note summary {
+  cursor: pointer;
+  font-weight: 800;
 }
 
 .status-pill {
@@ -815,6 +904,16 @@ button,
 .status-running {
   background: rgba(52, 199, 89, 0.18);
   color: var(--ok);
+}
+
+.status-pending {
+  background: rgba(255, 204, 0, 0.18);
+  color: var(--warn);
+}
+
+.status-error {
+  background: rgba(255, 69, 58, 0.16);
+  color: var(--danger);
 }
 
 .location-edit-row {
@@ -862,7 +961,22 @@ button,
   box-shadow: var(--shadow);
 }
 
+.location-info-dialog {
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--card);
+  color: var(--text);
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+
 .image-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.68);
+}
+
+.location-info-dialog::backdrop {
   background: rgba(0, 0, 0, 0.68);
 }
 
@@ -884,6 +998,130 @@ button,
 .dialog-close {
   display: block;
   margin: 0 0 12px auto;
+}
+
+.location-info-content {
+  display: grid;
+  gap: 18px;
+}
+
+.location-info-content h2 {
+  font-size: 30px;
+}
+
+.location-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.location-info-grid div {
+  border-radius: 16px;
+  background: var(--bg);
+  padding: 12px;
+}
+
+.location-info-grid.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.location-info-adherence {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.location-info-adherence-header {
+  display: grid;
+  gap: 10px;
+}
+
+.location-range-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.location-range-button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.location-range-button.active {
+  border-color: rgba(10, 132, 255, 0.45);
+  background: rgba(10, 132, 255, 0.16);
+  color: var(--text);
+}
+
+.location-range-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.location-range-panel[hidden] {
+  display: none;
+}
+
+.location-info-chain {
+  grid-template-columns: repeat(auto-fill, 13px);
+  gap: 6px;
+  height: auto;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.location-info-chain .habit-dot {
+  width: 13px;
+  border-radius: 5px;
+}
+
+.adherence-detail-content {
+  gap: 16px;
+}
+
+.adherence-detail-section {
+  display: grid;
+  gap: 10px;
+}
+
+.adherence-detail-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.adherence-detail-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 12px;
+  border-radius: 14px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.adherence-detail-list span,
+.adherence-detail-list small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.adherence-detail-list small {
+  color: var(--muted);
+}
+
+.adherence-detail-list form {
+  grid-row: span 2;
 }
 
 @media (max-width: 760px) {
@@ -914,6 +1152,8 @@ button,
   .location-edit-row,
   .inline-form,
   .form-pair,
+  .location-info-grid,
+  .location-info-grid.compact,
   .backup-actions {
     grid-template-columns: 1fr;
   }

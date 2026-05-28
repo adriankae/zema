@@ -44,7 +44,7 @@ def reminder_timezone(config: AppConfig) -> ZoneInfo:
 def reminder_keyboard(episode_id: int, *, allow_writes: bool) -> InlineKeyboardMarkup:
     rows = []
     if allow_writes:
-        rows.append([InlineKeyboardButton("Log application", callback_data=f"due:log:{episode_id}")])
+        rows.append([InlineKeyboardButton("Done", callback_data=f"due:log:{episode_id}")])
     rows.append(
         [
             InlineKeyboardButton("Snooze", callback_data=f"rem:snooze:{episode_id}"),

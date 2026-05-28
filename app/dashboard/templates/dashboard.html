@@ -17,7 +17,12 @@
         <div class="topbar-actions">
           <form method="post" action="/dashboard/treatments/undo-last">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="icon-button" type="submit" aria-label="Undo last action"><span aria-hidden="true">↻</span></button>
+            <button class="icon-button" type="submit" aria-label="Undo last action">
+              <svg aria-hidden="true" class="button-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 14 4 9l5-5"/>
+                <path d="M4 9h10a6 6 0 0 1 0 12h-1"/>
+              </svg>
+            </button>
           </form>
           <form method="post" action="/dashboard/theme">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -27,6 +32,29 @@
             {% else %}
               <input type="hidden" name="theme" value="dark">
               <button class="icon-button" type="submit" aria-label="Switch to dark mode"><span aria-hidden="true">🌙</span></button>
+            {% endif %}
+          </form>
+          <form method="post" action="/dashboard/privacy">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="return_to" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+            {% if privacy_mode %}
+              <input type="hidden" name="privacy_mode" value="off">
+              <button class="icon-button privacy-toggle active" type="submit" aria-label="Disable privacy mode">
+                <svg aria-hidden="true" class="button-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 3l18 18"/>
+                  <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/>
+                  <path d="M9.9 4.2A10.6 10.6 0 0 1 12 4c5 0 8.5 3.2 10 8a13.2 13.2 0 0 1-2.2 4.1"/>
+                  <path d="M6.6 6.7A13 13 0 0 0 2 12c1.5 4.8 5 8 10 8a10.4 10.4 0 0 0 5.4-1.5"/>
+                </svg>
+              </button>
+            {% else %}
+              <input type="hidden" name="privacy_mode" value="on">
+              <button class="icon-button privacy-toggle" type="submit" aria-label="Enable privacy mode">
+                <svg aria-hidden="true" class="button-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
             {% endif %}
           </form>
           <form method="post" action="/dashboard/logout">
@@ -81,14 +109,19 @@
             <article class="card action-card">
               <div class="location-row">
                 {% if item.image_url %}
-                  <button type="button" class="image-popup-trigger" data-image-url="{{ item.image_url }}" data-image-title="{{ item.location_name }}" aria-label="Open image for {{ item.location_name }}">
+                  <button type="button" class="image-popup-trigger" data-image-url="{{ item.image_url }}" data-image-title="{{ item.location_name|privacy_name(privacy_mode) }}" aria-label="Open image for {{ item.location_name|privacy_name(privacy_mode) }}">
                     <img src="{{ item.image_url }}" alt="" class="location-image">
                   </button>
                 {% else %}
                   <div class="location-initial">{{ item.location_name[:1] }}</div>
                 {% endif %}
                 <div>
-                  <h3>{{ item.location_name }}</h3>
+                  <div class="location-title-row">
+                    <h3>{{ item.location_name|privacy_name(privacy_mode) }}</h3>
+                    <button type="button" class="mini-icon-button location-info-trigger" data-location-info-id="{{ item.episode_id }}" aria-label="Show details for {{ item.location_name|privacy_name(privacy_mode) }}">
+                      <span aria-hidden="true">i</span>
+                    </button>
+                  </div>
                   <p>Phase {{ item.phase_number }}{% if item.phase_number == 1 and item.due_slot %} · {{ item.due_slot }} slot{% endif %}</p>
                 </div>
               </div>
@@ -133,14 +166,19 @@
               <article class="list-row">
                 <div class="location-row list-location-row">
                   {% if item.image_url %}
-                    <button type="button" class="image-popup-trigger" data-image-url="{{ item.image_url }}" data-image-title="{{ item.location_name }}" aria-label="Open image for {{ item.location_name }}">
+                    <button type="button" class="image-popup-trigger" data-image-url="{{ item.image_url }}" data-image-title="{{ item.location_name|privacy_name(privacy_mode) }}" aria-label="Open image for {{ item.location_name|privacy_name(privacy_mode) }}">
                       <img src="{{ item.image_url }}" alt="" class="location-image thumbnail-image">
                     </button>
                   {% else %}
                     <div class="location-initial thumbnail-image">{{ item.location_name[:1] }}</div>
                   {% endif %}
                   <div>
-                    <h3>{{ item.location_name }}</h3>
+                    <div class="location-title-row">
+                      <h3>{{ item.location_name|privacy_name(privacy_mode) }}</h3>
+                      <button type="button" class="mini-icon-button location-info-trigger" data-location-info-id="{{ item.episode_id }}" aria-label="Show details for {{ item.location_name|privacy_name(privacy_mode) }}">
+                        <span aria-hidden="true">i</span>
+                      </button>
+                    </div>
                     <p>Phase {{ item.phase_number }}</p>
                   </div>
                 </div>
@@ -165,7 +203,12 @@
           <div class="card location-cloud">
             {% if overview.active_locations %}
               {% for item in overview.active_locations %}
-                <span>{{ item.location_name }} <small>Phase {{ item.phase_number }}</small></span>
+                <span class="location-chip">
+                  {{ item.location_name|privacy_name(privacy_mode) }} <small>Phase {{ item.phase_number }}</small>
+                  <button type="button" class="mini-icon-button location-info-trigger" data-location-info-id="{{ item.episode_id }}" aria-label="Show details for {{ item.location_name|privacy_name(privacy_mode) }}">
+                    <span aria-hidden="true">i</span>
+                  </button>
+                </span>
               {% endfor %}
             {% else %}
               <p class="muted">No active locations are being tracked.</p>
@@ -204,13 +247,16 @@
               {% if item.habit_chain %}
                 <div class="habit-chain" role="list" aria-label="{{ item.label }} adherence chain" data-range-days="{{ item.day_count }}">
                   {% for day in item.habit_chain %}
-                    <span
+                    <button
+                      type="button"
                       role="listitem"
                       class="habit-dot habit-{{ day.status }}{% if day.is_today %} habit-today{% endif %}"
                       data-date="{{ day.date.isoformat() }}"
                       data-status="{{ day.status }}"
+                      data-adherence-detail-id="adherence-detail-{{ day.date.isoformat() }}"
                       title="{{ day.date|zdate }} · {{ day.status.replace('_', ' ') }}"
-                    ></span>
+                      aria-label="Show adherence details for {{ day.date|zdate }}"
+                    ></button>
                   {% endfor %}
                 </div>
                 <div class="habit-reference" aria-label="{{ item.label }} reference points">
@@ -222,6 +268,188 @@
           </div>
         </div>
       </section>
+
+      {% for item in overview.adherence %}
+        {% for day in item.habit_chain %}
+          {% if day.detail %}
+            <template id="adherence-detail-{{ day.date.isoformat() }}">
+              <div class="location-info-content adherence-detail-content">
+                <div>
+                  <p class="eyebrow">Adherence</p>
+                  <h2>{{ day.date|zdate }}</h2>
+                  <p class="muted">{{ day.status.replace('_', ' ') }}</p>
+                </div>
+                <div class="adherence-detail-section">
+                  <h3>Logged</h3>
+                  {% if day.detail.logged %}
+                    <ul class="adherence-detail-list">
+                      {% for logged in day.detail.logged %}
+                        <li>
+                          <span>{{ logged.location_name|privacy_name(privacy_mode) }}</span>
+                          <small>Phase {{ logged.phase_number }}, {{ logged.logged_at|zdt }}</small>
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% else %}
+                    <p class="muted">Nothing logged for this day.</p>
+                  {% endif %}
+                </div>
+                <div class="adherence-detail-section">
+                  <h3>Missing</h3>
+                  {% if day.detail.missing %}
+                    <ul class="adherence-detail-list">
+                      {% for missing in day.detail.missing %}
+                        <li>
+                          <span>{{ missing.location_name|privacy_name(privacy_mode) }}</span>
+                          <small>Phase {{ missing.phase_number }}, {{ missing.label }}</small>
+                          <form method="post" action="/dashboard/adherence/log-missing">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="episode_id" value="{{ missing.episode_id }}">
+                            <input type="hidden" name="phase_number" value="{{ missing.phase_number }}">
+                            <input type="hidden" name="applied_at" value="{{ missing.suggested_at.isoformat() }}">
+                            <input type="hidden" name="return_to" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}#adherence">
+                            <button class="secondary-button compact-button" type="submit">Log</button>
+                          </form>
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% else %}
+                    <p class="muted">No missing treatment for this day.</p>
+                  {% endif %}
+                </div>
+              </div>
+            </template>
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+
+      {% for item in overview.active_locations %}
+        <template id="location-info-template-{{ item.episode_id }}">
+          <div class="location-info-content">
+            <div>
+              <p class="eyebrow">Location</p>
+              <h2>{{ item.location_name|privacy_name(privacy_mode) }}</h2>
+              <p class="muted">Phase {{ item.phase_number }}</p>
+            </div>
+            <dl class="location-info-grid">
+              <div>
+                <dt>Last phase change</dt>
+                <dd>{% if item.last_phase_change_at %}{{ item.last_phase_change_at|zdate }}{% else %}Not yet{% endif %}</dd>
+              </div>
+              <div>
+                <dt>Next phase change</dt>
+                <dd>{% if item.next_phase_change_at %}{{ item.next_phase_change_at|zdate }}{% else %}Not scheduled{% endif %}</dd>
+              </div>
+            </dl>
+            {% if item.location_adherence %}
+              <div class="location-info-adherence">
+                <div class="location-info-adherence-header">
+                  <h3>This location adherence</h3>
+                  <div class="location-range-controls" aria-label="{{ item.location_name|privacy_name(privacy_mode) }} adherence range">
+                    {% for range in item.location_adherence %}
+                      <button
+                        type="button"
+                        class="location-range-button{% if range.range_key == 'month' %} active{% endif %}"
+                        data-location-range="{{ range.range_key }}"
+                        aria-pressed="{% if range.range_key == 'month' %}true{% else %}false{% endif %}"
+                      >{{ range.label }}</button>
+                    {% endfor %}
+                  </div>
+                </div>
+                {% for range in item.location_adherence %}
+                  <div class="location-range-panel{% if range.range_key == 'month' %} active{% endif %}" data-location-range-panel="{{ range.range_key }}"{% if range.range_key != 'month' %} hidden{% endif %}>
+                    <div class="adherence-row">
+                      <p>{{ range.from_date|zdate }} to {{ range.to_date|zdate }}</p>
+                      <strong>{% if range.score is none %}--{% else %}{{ "%.0f"|format(range.score * 100) }}%{% endif %}</strong>
+                    </div>
+                    <dl class="location-info-grid compact">
+                      <div>
+                        <dt>Expected</dt>
+                        <dd>{{ range.expected }}</dd>
+                      </div>
+                      <div>
+                        <dt>Completed</dt>
+                        <dd>{{ range.completed }}</dd>
+                      </div>
+                      <div>
+                        <dt>Missed days</dt>
+                        <dd>{{ range.missed_days }}</dd>
+                      </div>
+                    </dl>
+                    {% if range.habit_chain %}
+                      <div class="habit-chain location-info-chain" role="list" aria-label="{{ item.location_name|privacy_name(privacy_mode) }} {{ range.label }} adherence chain" data-range-days="{{ range.day_count }}">
+                        {% for day in range.habit_chain %}
+                          <button
+                            type="button"
+                            role="listitem"
+                            class="habit-dot habit-{{ day.status }}{% if day.is_today %} habit-today{% endif %}"
+                            data-date="{{ day.date.isoformat() }}"
+                            data-status="{{ day.status }}"
+                            data-adherence-detail-id="location-adherence-detail-{{ item.episode_id }}-{{ range.range_key }}-{{ day.date.isoformat() }}"
+                            title="{{ day.date|zdate }} · {{ day.status.replace('_', ' ') }}"
+                            aria-label="Show {{ item.location_name|privacy_name(privacy_mode) }} adherence details for {{ day.date|zdate }}"
+                          ></button>
+                        {% endfor %}
+                      </div>
+                      {% for day in range.habit_chain %}
+                        {% if day.detail %}
+                          <template id="location-adherence-detail-{{ item.episode_id }}-{{ range.range_key }}-{{ day.date.isoformat() }}">
+                            <div class="location-info-content adherence-detail-content">
+                              <div>
+                                <p class="eyebrow">{{ item.location_name|privacy_name(privacy_mode) }}</p>
+                                <h2>{{ day.date|zdate }}</h2>
+                                <p class="muted">{{ day.status.replace('_', ' ') }}</p>
+                              </div>
+                              <div class="adherence-detail-section">
+                                <h3>Logged</h3>
+                                {% if day.detail.logged %}
+                                  <ul class="adherence-detail-list">
+                                    {% for logged in day.detail.logged %}
+                                      <li>
+                                        <span>{{ logged.location_name|privacy_name(privacy_mode) }}</span>
+                                        <small>Phase {{ logged.phase_number }}, {{ logged.logged_at|zdt }}</small>
+                                      </li>
+                                    {% endfor %}
+                                  </ul>
+                                {% else %}
+                                  <p class="muted">Nothing logged for this day.</p>
+                                {% endif %}
+                              </div>
+                              <div class="adherence-detail-section">
+                                <h3>Missing</h3>
+                                {% if day.detail.missing %}
+                                  <ul class="adherence-detail-list">
+                                    {% for missing in day.detail.missing %}
+                                      <li>
+                                        <span>{{ missing.location_name|privacy_name(privacy_mode) }}</span>
+                                        <small>Phase {{ missing.phase_number }}, {{ missing.label }}</small>
+                                        <form method="post" action="/dashboard/adherence/log-missing">
+                                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                          <input type="hidden" name="episode_id" value="{{ missing.episode_id }}">
+                                          <input type="hidden" name="phase_number" value="{{ missing.phase_number }}">
+                                          <input type="hidden" name="applied_at" value="{{ missing.suggested_at.isoformat() }}">
+                                          <input type="hidden" name="return_to" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+                                          <button class="secondary-button compact-button" type="submit">Log</button>
+                                        </form>
+                                      </li>
+                                    {% endfor %}
+                                  </ul>
+                                {% else %}
+                                  <p class="muted">No missing treatment for this day.</p>
+                                {% endif %}
+                              </div>
+                            </div>
+                          </template>
+                        {% endif %}
+                      {% endfor %}
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+        </template>
+      {% endfor %}
 
       {% else %}
       <section id="settings" class="section-grid settings-section" aria-labelledby="settings-title">
@@ -289,24 +517,27 @@
                 <div class="location-edit-row">
                   <div class="location-row">
                     {% if location.image_url %}
-                      <button type="button" class="image-popup-trigger" data-image-url="{{ location.image_url }}" data-image-title="{{ location.display_name }}" aria-label="Open image for {{ location.display_name }}">
+                      <button type="button" class="image-popup-trigger" data-image-url="{{ location.image_url }}" data-image-title="{{ location.display_name|privacy_name(privacy_mode) }}" aria-label="Open image for {{ location.display_name|privacy_name(privacy_mode) }}">
                         <img src="{{ location.image_url }}" alt="" class="location-image thumbnail-image">
                       </button>
                     {% else %}
                       <div class="location-initial thumbnail-image">{{ location.display_name[:1] }}</div>
                     {% endif %}
                     <div>
-                      <h3>{{ location.display_name }}</h3>
+                      <h3>{{ location.display_name|privacy_name(privacy_mode) }}</h3>
                     </div>
                   </div>
-                  <form method="post" action="/dashboard/locations/{{ location.id }}" class="inline-form settings-form">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <label>
-                      <span>Display name</span>
-                      <input name="display_name" value="{{ location.display_name }}" required>
-                    </label>
-                    <button class="secondary-button compact-button" type="submit">Save</button>
-                  </form>
+	                  <form method="post" action="/dashboard/locations/{{ location.id }}" class="inline-form settings-form">
+	                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+	                    <label>
+	                      <span>Display name</span>
+	                      <input name="display_name" value="{{ location.display_name|privacy_name(privacy_mode) }}" {% if privacy_mode %}disabled aria-describedby="privacy-location-edit-note-{{ location.id }}"{% else %}required{% endif %}>
+	                    </label>
+	                    <button class="secondary-button compact-button" type="submit"{% if privacy_mode %} disabled{% endif %}>Save</button>
+	                    {% if privacy_mode %}
+	                      <p class="muted privacy-edit-note" id="privacy-location-edit-note-{{ location.id }}">Disable privacy mode to edit this name.</p>
+	                    {% endif %}
+	                  </form>
                   <form method="post" action="/dashboard/locations/{{ location.id }}/image" class="inline-form settings-form" enctype="multipart/form-data">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <label>
@@ -348,35 +579,34 @@
           <section class="settings-panel" aria-labelledby="telegram-settings-title">
             <h3 id="telegram-settings-title">Telegram Bot</h3>
             <div class="telegram-status settings-form">
-              <span class="{% if telegram.enabled %}status-pill status-running{% else %}status-pill{% endif %}">{% if telegram.enabled %}Enabled{% else %}Disabled{% endif %}</span>
+              <span class="{% if telegram.runtime_status == 'active' %}status-pill status-running{% elif telegram.last_error %}status-pill status-error{% elif telegram.runtime_status in ['starting', 'stopping'] or telegram.enabled %}status-pill status-pending{% else %}status-pill{% endif %}">{{ telegram.status_label }}</span>
               {% if telegram.bot_username %}
-                <span class="muted">@{{ telegram.bot_username }}</span>
+                <span class="muted long-token">@{{ telegram.bot_username }}</span>
               {% endif %}
               {% if telegram.configured %}
-                <span class="muted">Token saved</span>
-              {% else %}
-                <span class="muted">No token saved</span>
-              {% endif %}
-              {% if telegram.configured %}
-                <form method="post" action="/dashboard/telegram/reset" class="telegram-inline-action">
+                <form method="post" action="/dashboard/telegram/reset" class="telegram-inline-action" onsubmit="return confirm('Remove this Telegram bot setup and start over?');">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                  <button class="danger-button" type="submit">Reset Telegram setup</button>
+                  <button class="danger-button" type="submit">Reset bot setup</button>
                 </form>
               {% endif %}
             </div>
-            {% if telegram.notice %}
+            {% if not telegram.setup_complete %}
+              <p class="muted telegram-status-detail">{{ telegram.status_detail }}</p>
+            {% endif %}
+            {% if telegram.notice and not telegram.setup_complete %}
               <p class="form-success">{{ telegram.notice }}</p>
             {% endif %}
-            {% if telegram.last_error %}
+            {% if telegram.last_error and not telegram.setup_complete %}
               <p class="form-error">{{ telegram.last_error }}</p>
             {% endif %}
 
+            {% if not telegram.setup_complete %}
             <div class="telegram-wizard settings-form">
               <section class="wizard-step {% if telegram.current_step == 1 %}wizard-current{% endif %}">
                 <div class="wizard-step-marker">1</div>
                 <div class="wizard-step-body">
-                  <h4>Connect the bot</h4>
-                  <p class="muted">Paste the token from BotFather. Zema checks it with Telegram and stores it encrypted.</p>
+                  <h4>Connect bot</h4>
+                  <p class="muted">Paste the token from BotFather. Zema checks the bot and keeps the token private.</p>
                   <form method="post" action="/dashboard/telegram/token" class="stack-form compact-stack-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <label><span>Bot token</span><input name="bot_token" type="password" autocomplete="off" placeholder="{% if telegram.configured %}Replace existing token{% else %}123456:ABC...{% endif %}" required></label>
@@ -388,12 +618,20 @@
               <section class="wizard-step {% if telegram.current_step == 2 %}wizard-current{% endif %}">
                 <div class="wizard-step-marker">2</div>
                 <div class="wizard-step-body">
-                  <h4>Link your chat</h4>
-                  <p class="muted">Send /start to the bot in Telegram, then find the chat here. No manual chat-ID copy needed.</p>
+                  <h4>Open Telegram</h4>
+                  <p class="muted">Open the bot, send <code>/start</code>, then come back and find your chat.</p>
+                  {% if telegram.telegram_url %}
+                    <a class="button-link telegram-open-link" href="{{ telegram.telegram_url }}" target="_blank" rel="noopener">Open @{{ telegram.bot_username }} in Telegram</a>
+                  {% endif %}
                   <form method="post" action="/dashboard/telegram/discover" class="telegram-inline-action">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button class="secondary-button" type="submit"{% if not telegram.configured %} disabled{% endif %}>Find chats</button>
+                    <button class="secondary-button" type="submit"{% if not telegram.can_discover_chats %} disabled{% endif %}>Find my chat</button>
                   </form>
+                  {% if not telegram.configured %}
+                    <p class="muted">Connect the bot first.</p>
+                  {% elif not telegram.can_discover_chats %}
+                    <p class="muted">Turn the bot off and wait until it stops before changing chats.</p>
+                  {% endif %}
                   {% if telegram.discovered_chats %}
                     <form method="post" action="/dashboard/telegram" class="stack-form compact-stack-form">
                       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -403,14 +641,14 @@
                           <input name="allowed_chat_ids" type="radio" value="{{ chat.id }}"{% if chat.id in telegram.allowed_chat_ids %} checked{% elif loop.first and not telegram.allowed_chat_ids %} checked{% endif %}>
                           <span>
                             <strong>{{ chat.title }}</strong>
-                            <small>{{ chat.type }} chat · {{ chat.id }}{% if chat.user_id %} · user {{ chat.user_id }}{% endif %}</small>
+                            <small>{{ chat.type }} chat</small>
                           </span>
                         </label>
                       {% endfor %}
                       <button type="submit">Use selected chat</button>
                     </form>
                   {% elif telegram.allowed_chat_ids %}
-                    <p class="muted">Linked chat IDs: {{ telegram.allowed_chat_ids_text }}</p>
+                    <p class="muted">Chat linked.</p>
                   {% endif %}
                 </div>
               </section>
@@ -418,12 +656,11 @@
               <section class="wizard-step {% if telegram.current_step == 3 %}wizard-current{% endif %}">
                 <div class="wizard-step-marker">3</div>
                 <div class="wizard-step-body">
-                  <h4>Enable Telegram</h4>
-                  <p class="muted">Enabling creates a private API key for the Telegram runtime.</p>
+                  <h4>Enable Bot</h4>
                   {% if telegram.allowed_chat_ids %}
-                    <p class="muted">Linked chat IDs: {{ telegram.allowed_chat_ids_text }}</p>
+                    <p class="muted">Your chat is linked. Turn the bot on when you are ready.</p>
                   {% else %}
-                    <p class="muted">Choose a chat before enabling Telegram.</p>
+                    <p class="muted">Find your chat before enabling the bot.</p>
                   {% endif %}
                   <div class="telegram-actions">
                     <form method="post" action="/dashboard/telegram/enable">
@@ -431,14 +668,25 @@
                       <button type="submit"{% if not telegram.configured or not telegram.allowed_chat_ids or telegram.enabled %} disabled{% endif %}>Enable Bot</button>
                     </form>
                   </div>
+                  {% if telegram.runtime_status == 'active' and telegram.telegram_url %}
+                    <p class="muted">Bot active. Open Telegram and send <code>/menu</code> to test it.</p>
+                    <a class="button-link telegram-open-link" href="{{ telegram.telegram_url }}" target="_blank" rel="noopener">Open Telegram</a>
+                  {% elif telegram.enabled %}
+                    <p class="muted">Starting bot. This can take a few seconds.</p>
+                  {% elif not telegram.allowed_chat_ids %}
+                    <p class="muted">Enable Bot becomes available after your chat is linked.</p>
+                  {% endif %}
                 </div>
               </section>
 
-              <div class="telegram-runtime-note">
-                <strong>Runtime</strong>
-                <p class="muted">The dashboard manages setup. Keep the app stack running with <code>docker compose --profile telegram up -d</code>.</p>
-              </div>
+              {% if telegram.configured %}
+                <details class="telegram-runtime-note">
+                  <summary>Advanced details</summary>
+                  <p class="muted">Status: {{ telegram.runtime_status }}{% if telegram.allowed_chat_ids %}. Chat: {{ telegram.allowed_chat_ids_text }}{% endif %}</p>
+                </details>
+              {% endif %}
             </div>
+            {% endif %}
           </section>
           {% endif %}
         </article>
@@ -451,6 +699,18 @@
         </form>
         <img src="" alt="" id="image-dialog-img">
         <p id="image-dialog-title"></p>
+      </dialog>
+      <dialog class="location-info-dialog" id="location-info-dialog" aria-label="Location details">
+        <form method="dialog">
+          <button type="submit" class="dialog-close" aria-label="Close location details">Close</button>
+        </form>
+        <div id="location-info-dialog-body"></div>
+      </dialog>
+      <dialog class="location-info-dialog" id="adherence-detail-dialog" aria-label="Adherence day details">
+        <form method="dialog">
+          <button type="submit" class="dialog-close" aria-label="Close adherence details">Close</button>
+        </form>
+        <div id="adherence-detail-dialog-body"></div>
       </dialog>
     </main>
     <script>
@@ -467,6 +727,107 @@
       });
       dialog.addEventListener("close", () => {
         dialogImage.removeAttribute("src");
+      });
+
+      const locationInfoDialog = document.getElementById("location-info-dialog");
+      const locationInfoBody = document.getElementById("location-info-dialog-body");
+      let activeLocationInfoTemplateId = null;
+      let activeLocationRange = "month";
+      const selectLocationRange = (selectedRange) => {
+        activeLocationRange = selectedRange;
+        locationInfoBody.querySelectorAll(".location-range-button").forEach((rangeButton) => {
+          const isSelected = rangeButton.dataset.locationRange === selectedRange;
+          rangeButton.classList.toggle("active", isSelected);
+          rangeButton.setAttribute("aria-pressed", isSelected ? "true" : "false");
+        });
+        locationInfoBody.querySelectorAll(".location-range-panel").forEach((panel) => {
+          const isSelected = panel.dataset.locationRangePanel === selectedRange;
+          panel.hidden = !isSelected;
+          panel.classList.toggle("active", isSelected);
+        });
+      };
+      const refreshActiveLocationInfo = (documentSource) => {
+        if (!activeLocationInfoTemplateId || !locationInfoDialog.open) {
+          return;
+        }
+        const template = documentSource.getElementById(activeLocationInfoTemplateId);
+        if (!template) {
+          return;
+        }
+        locationInfoBody.replaceChildren(template.content.cloneNode(true));
+        selectLocationRange(activeLocationRange);
+      };
+      document.querySelectorAll(".location-info-trigger").forEach((trigger) => {
+        trigger.addEventListener("click", () => {
+          activeLocationInfoTemplateId = `location-info-template-${trigger.dataset.locationInfoId}`;
+          activeLocationRange = "month";
+          const template = document.getElementById(activeLocationInfoTemplateId);
+          if (!template) {
+            return;
+          }
+          locationInfoBody.replaceChildren(template.content.cloneNode(true));
+          locationInfoDialog.showModal();
+        });
+      });
+      locationInfoDialog.addEventListener("close", () => {
+        activeLocationInfoTemplateId = null;
+        activeLocationRange = "month";
+        locationInfoBody.replaceChildren();
+      });
+      locationInfoBody.addEventListener("click", (event) => {
+        const button = event.target.closest(".location-range-button");
+        if (!button) {
+          return;
+        }
+        selectLocationRange(button.dataset.locationRange);
+      });
+
+      const adherenceDetailDialog = document.getElementById("adherence-detail-dialog");
+      const adherenceDetailBody = document.getElementById("adherence-detail-dialog-body");
+      document.addEventListener("click", (event) => {
+        const trigger = event.target.closest("[data-adherence-detail-id]");
+        if (!trigger) {
+          return;
+        }
+        const template = document.getElementById(trigger.dataset.adherenceDetailId);
+        if (!template) {
+          return;
+        }
+        adherenceDetailBody.replaceChildren(template.content.cloneNode(true));
+        adherenceDetailDialog.showModal();
+      });
+      adherenceDetailDialog.addEventListener("close", () => {
+        adherenceDetailBody.replaceChildren();
+      });
+      adherenceDetailDialog.addEventListener("submit", async (event) => {
+        const form = event.target.closest('form[action="/dashboard/adherence/log-missing"]');
+        if (!form) {
+          return;
+        }
+        event.preventDefault();
+        const submitButton = form.querySelector('button[type="submit"]');
+        if (submitButton) {
+          submitButton.disabled = true;
+        }
+        try {
+          const response = await fetch(form.action, {
+            method: "POST",
+            body: new FormData(form),
+            credentials: "same-origin",
+            headers: { "X-Requested-With": "fetch" },
+          });
+          if (!response.ok) {
+            throw new Error("Logging failed");
+          }
+          const html = await response.text();
+          const refreshedDocument = new DOMParser().parseFromString(html, "text/html");
+          refreshActiveLocationInfo(refreshedDocument);
+          adherenceDetailDialog.close();
+        } catch (_error) {
+          if (submitButton) {
+            submitButton.disabled = false;
+          }
+        }
       });
     </script>
   </body>

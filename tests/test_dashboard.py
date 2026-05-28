@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from html.parser import HTMLParser
+from pathlib import Path
 
 from app.core.database import SessionLocal
 from app.core.security import verify_password
@@ -446,6 +447,10 @@ def test_due_header_renders_primary_log_all_button(client, monkeypatch):
     assert 'action="/dashboard/treatments/all-due"' in due_block
     assert '<button type="submit">Log all locations</button>' in due_block
     assert "secondary-button" not in due_block
+    assert 'class="hero-status-title"' in response.text
+    css = Path("app/dashboard/static/dashboard.css").read_text()
+    assert ".hero-card .hero-status-title" in css
+    assert "font-size: 28px;" in css
 
 
 def test_upcoming_section_renders_active_and_tapering_non_due_episodes(client, monkeypatch):
@@ -1838,6 +1843,7 @@ def test_dashboard_management_forms_are_grouped_as_settings_panels(client):
     subject = client.get("/dashboard?tab=settings&settings_tab=subject")
     add_location = client.get("/dashboard?tab=settings&settings_tab=add-location")
     edit_locations = client.get("/dashboard?tab=settings&settings_tab=edit-locations")
+    network = client.get("/dashboard?tab=settings&settings_tab=network")
 
     assert overview.status_code == 200
     assert 'id="settings"' not in overview.text
@@ -1855,6 +1861,25 @@ def test_dashboard_management_forms_are_grouped_as_settings_panels(client):
     assert 'name="code"' not in add_location.text
     assert "Upload image" in edit_locations.text or "Replace image" in edit_locations.text
     assert "settings_tabs" not in edit_locations.text
+    assert network.status_code == 200
+    assert 'href="/dashboard?tab=settings&settings_tab=network" class="active"' in network.text
+    assert "Local only" in network.text
+    assert "http://localhost:28173/dashboard" in network.text
+    assert "http://localhost:28173/health" in network.text
+    assert "ZEMA_HOST_BIND=127.0.0.1" in network.text
+    assert "ZEMA_PORT=28173" in network.text
+
+
+def test_docker_compose_defaults_bind_dashboard_to_localhost():
+    compose = Path("docker-compose.yml").read_text()
+    env_example = Path(".env.example").read_text()
+
+    assert "${ZEMA_HOST_BIND:-127.0.0.1}:${ZEMA_PORT:-28173}:28173" in compose
+    assert "${ZEMA_POSTGRES_HOST_BIND:-127.0.0.1}:${ZEMA_POSTGRES_PORT:-5432}:5432" in compose
+    assert "ZEMA_HOST_BIND=127.0.0.1" in env_example
+    assert "ZEMA_PORT=28173" in env_example
+    assert "ZEMA_POSTGRES_HOST_BIND=127.0.0.1" in env_example
+    assert "Use 0.0.0.0 only" in env_example
 
 
 def test_dashboard_add_location_with_image(client):

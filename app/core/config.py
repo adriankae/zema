@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     initial_password: str = "admin"
     location_image_dir: str = "./location-images"
     location_image_max_bytes: int = 5 * 1024 * 1024
+    zema_host_bind: str = "127.0.0.1"
+    zema_port: int = 28173
     telegram_backend_url: str = "http://127.0.0.1:28173"
 
 

@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: eczema
       POSTGRES_PASSWORD: eczema
     ports:
-      - "5432:5432"
+      - "${ZEMA_POSTGRES_HOST_BIND:-127.0.0.1}:${ZEMA_POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U eczema -d eczema"]
       interval: 5s
@@ -26,6 +26,8 @@ services:
       APP_ENV: local
       DEPLOYMENT_TIMEZONE: ${CZM_TIMEZONE:-Europe/Berlin}
       APP_PORT: 28173
+      ZEMA_HOST_BIND: ${ZEMA_HOST_BIND:-127.0.0.1}
+      ZEMA_PORT: ${ZEMA_PORT:-28173}
       ENABLE_SCHEDULER: "true"
       JWT_SECRET: change-me-in-production
       INITIAL_USERNAME: admin
@@ -36,7 +38,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "28173:28173"
+      - "${ZEMA_HOST_BIND:-127.0.0.1}:${ZEMA_PORT:-28173}:28173"
     volumes:
       - zema-location-images:/data/location-images
 

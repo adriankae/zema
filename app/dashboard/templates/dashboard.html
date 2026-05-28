@@ -80,7 +80,7 @@
             <h2>All clear</h2>
             <p>No treatment is due at this moment.</p>
           {% else %}
-            <h2>{{ overview.due|length }} treatment{% if overview.due|length != 1 %}s{% endif %} due now</h2>
+            <h2 class="hero-status-title">{{ overview.due|length }} treatment{% if overview.due|length != 1 %}s{% endif %} due now</h2>
             <p>Log each completed treatment here, then refresh the overview from the current record.</p>
           {% endif %}
         </div>
@@ -464,6 +464,7 @@
           <a href="/dashboard?tab=settings&settings_tab=add-location" class="{% if active_settings_tab == 'add-location' %}active{% endif %}" aria-current="{% if active_settings_tab == 'add-location' %}page{% else %}false{% endif %}">Add Location</a>
           <a href="/dashboard?tab=settings&settings_tab=edit-locations" class="{% if active_settings_tab == 'edit-locations' %}active{% endif %}" aria-current="{% if active_settings_tab == 'edit-locations' %}page{% else %}false{% endif %}">Edit Locations</a>
           <a href="/dashboard?tab=settings&settings_tab=backup" class="{% if active_settings_tab == 'backup' %}active{% endif %}" aria-current="{% if active_settings_tab == 'backup' %}page{% else %}false{% endif %}">Import / Export</a>
+          <a href="/dashboard?tab=settings&settings_tab=network" class="{% if active_settings_tab == 'network' %}active{% endif %}" aria-current="{% if active_settings_tab == 'network' %}page{% else %}false{% endif %}">Network</a>
           <a href="/dashboard?tab=settings&settings_tab=telegram" class="{% if active_settings_tab == 'telegram' %}active{% endif %}" aria-current="{% if active_settings_tab == 'telegram' %}page{% else %}false{% endif %}">Telegram</a>
         </nav>
 
@@ -572,6 +573,41 @@
                 <label class="checkbox-label"><input name="confirm_replace" type="checkbox" value="yes" required> Replace current tracking data</label>
                 <button class="danger-button" type="submit">Import backup</button>
               </form>
+            </div>
+          </section>
+          {% elif active_settings_tab == 'network' %}
+
+          <section class="settings-panel" aria-labelledby="network-settings-title">
+            <h3 id="network-settings-title">Network</h3>
+            <div class="network-status-grid settings-form">
+              <div class="network-status-card">
+                <span class="{% if network.is_local_only %}status-pill status-running{% else %}status-pill status-pending{% endif %}">{{ network.access_label }}</span>
+                <h4>Access mode</h4>
+                {% if network.is_local_only %}
+                  <p class="muted">Zema is bound to this computer only. This is the safest default for home use.</p>
+                {% else %}
+                  <p class="muted">Zema is bound beyond localhost. Only use this on a trusted private network.</p>
+                {% endif %}
+              </div>
+              <div class="network-status-card">
+                <h4>Dashboard URL</h4>
+                <code>{{ network.dashboard_url }}</code>
+              </div>
+              <div class="network-status-card">
+                <h4>Health URL</h4>
+                <code>{{ network.health_url }}</code>
+              </div>
+              <div class="network-status-card">
+                <h4>Port</h4>
+                <code>{{ network.port }}</code>
+              </div>
+            </div>
+            <div class="network-help settings-form">
+              <h4>Change the local port</h4>
+              <p class="muted">Edit `.env`, then restart Docker Compose. Most users should keep `ZEMA_HOST_BIND=127.0.0.1`.</p>
+              <pre><code>ZEMA_HOST_BIND=127.0.0.1
+ZEMA_PORT=28173</code></pre>
+              <p class="muted">Use `0.0.0.0` only if another device on your private network must reach Zema.</p>
             </div>
           </section>
           {% else %}

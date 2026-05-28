@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.time import to_local, utc_now
 from app.dashboard.auth import (
     LOGIN_CSRF_COOKIE,
@@ -50,7 +51,7 @@ THEME_PATH = SESSION_PATH
 PRIVACY_COOKIE = "zema_privacy"
 OVERVIEW_TAB = "overview"
 SETTINGS_TAB = "settings"
-SETTINGS_TABS = {"account", "subject", "add-location", "edit-locations", "backup", "telegram"}
+SETTINGS_TABS = {"account", "subject", "add-location", "edit-locations", "backup", "network", "telegram"}
 
 
 
@@ -90,6 +91,23 @@ def _dashboard_theme(request: Request) -> str:
 
 def _privacy_mode(request: Request) -> bool:
     return request.cookies.get(PRIVACY_COOKIE) == "on"
+
+
+def _network_status(request: Request) -> dict[str, str | bool | int]:
+    host_bind = settings.zema_host_bind.strip() or "127.0.0.1"
+    port = settings.zema_port or 28173
+    is_local_only = host_bind in {"127.0.0.1", "localhost", "::1"}
+    browser_host = "localhost" if is_local_only else request.url.hostname or host_bind
+    dashboard_url = f"http://{browser_host}:{port}/dashboard"
+    health_url = f"http://{browser_host}:{port}/health"
+    return {
+        "host_bind": host_bind,
+        "port": port,
+        "dashboard_url": dashboard_url,
+        "health_url": health_url,
+        "access_label": "Local only" if is_local_only else "Network exposed",
+        "is_local_only": is_local_only,
+    }
 
 
 def _dashboard_return_target(value: str | None, default: str = "/dashboard") -> str:
@@ -183,6 +201,7 @@ def _telegram_settings_html(
             "active_settings_tab": "telegram",
             "error": error,
             "telegram": telegram_settings_view(db, account),
+            "network": _network_status(request),
         },
         status_code=status_code,
     )
@@ -207,6 +226,7 @@ def dashboard_home(request: Request, db: Session = Depends(get_db)):
             "active_settings_tab": _active_settings_tab(request),
             "success_message": _success_message(request),
             "telegram": telegram_settings_view(db, account),
+            "network": _network_status(request),
         },
     )
 
@@ -439,6 +459,7 @@ def dashboard_discover_telegram_chats(
             "active_tab": SETTINGS_TAB,
             "active_settings_tab": "telegram",
             "telegram": telegram,
+            "network": _network_status(request),
         },
     )
 
@@ -585,6 +606,7 @@ def dashboard_log_treatment(
                 "active_tab": _active_tab(request),
                 "active_settings_tab": _active_settings_tab(request),
                 "error": "This form expired. Reload and try again.",
+                "network": _network_status(request),
             },
             status_code=status.HTTP_403_FORBIDDEN,
         )
@@ -658,6 +680,7 @@ def dashboard_log_all_due_treatments(
                 "active_tab": _active_tab(request),
                 "active_settings_tab": _active_settings_tab(request),
                 "error": "This form expired. Reload and try again.",
+                "network": _network_status(request),
             },
             status_code=status.HTTP_403_FORBIDDEN,
         )

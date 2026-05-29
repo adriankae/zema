@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timezone
+from importlib import metadata
 from pathlib import Path
 import re
+import tomllib
 import unicodedata
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
@@ -52,6 +54,23 @@ PRIVACY_COOKIE = "zema_privacy"
 OVERVIEW_TAB = "overview"
 SETTINGS_TAB = "settings"
 SETTINGS_TABS = {"account", "subject", "add-location", "edit-locations", "backup", "network", "telegram"}
+APP_VERSION = "unknown"
+
+
+def _app_version() -> str:
+    global APP_VERSION
+    if APP_VERSION != "unknown":
+        return APP_VERSION
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        with pyproject_path.open("rb") as handle:
+            APP_VERSION = tomllib.load(handle)["project"]["version"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        try:
+            APP_VERSION = metadata.version("eczema-tracker")
+        except metadata.PackageNotFoundError:
+            APP_VERSION = "unknown"
+    return APP_VERSION
 
 
 
@@ -177,6 +196,7 @@ def _require_account(request: Request, db: Session) -> Account:
 
 
 def _html(request: Request, template: str, context: dict, status_code: int = 200) -> HTMLResponse:
+    context.setdefault("app_version", _app_version())
     return templates.TemplateResponse(request, template, context, status_code=status_code)
 
 

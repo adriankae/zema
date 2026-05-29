@@ -1479,6 +1479,9 @@ def test_dashboard_topbar_is_fixed_and_contains_session_actions(client):
 
     assert response.status_code == 200
     assert 'class="topbar-shell"' in response.text
+    assert 'class="brand-link"' in response.text
+    assert "<span>Zema</span>" in response.text
+    assert "<small>v0.6.1</small>" in response.text
     assert 'class="topbar-actions"' in response.text
     assert 'href="/dashboard?tab=settings"' in response.text
     assert 'aria-label="Undo last action"' in response.text
@@ -1489,6 +1492,7 @@ def test_dashboard_topbar_is_fixed_and_contains_session_actions(client):
     assert 'aria-label="Enable privacy mode"' in response.text
     assert "Log out" in response.text
     assert "position: sticky" in css.text
+    assert ".brand-link small" in css.text
     assert ".button-icon" in css.text
     assert ".privacy-toggle.active" in css.text
     assert "z-index" in css.text

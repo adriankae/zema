@@ -10,7 +10,10 @@
   <body class="theme-{{ theme }}">
     <header class="topbar-shell">
       <div class="topbar">
-        <a href="/dashboard" class="brand-link" aria-label="Open overview">Zema</a>
+        <a href="/dashboard" class="brand-link" aria-label="Open overview">
+          <span>Zema</span>
+          <small>v{{ app_version }}</small>
+        </a>
         <nav class="topbar-nav" aria-label="Dashboard navigation">
           <a href="/dashboard" class="{% if active_tab == 'overview' %}active{% endif %}" aria-current="{% if active_tab == 'overview' %}page{% else %}false{% endif %}">Overview</a>
           <a href="/dashboard?tab=settings" class="{% if active_tab == 'settings' %}active{% endif %}" aria-current="{% if active_tab == 'settings' %}page{% else %}false{% endif %}">Settings</a>

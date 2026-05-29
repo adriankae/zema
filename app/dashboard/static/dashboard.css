@@ -404,6 +404,12 @@ button,
   gap: 10px;
 }
 
+.topbar-status-button {
+  width: 104px;
+  min-height: 38px;
+  padding: 0 14px;
+}
+
 .icon-button {
   width: 44px;
   padding: 0;
@@ -452,6 +458,10 @@ button,
 .list-card {
   display: grid;
   overflow: hidden;
+}
+
+.list-card > .muted {
+  padding: 16px 18px;
 }
 
 .list-row {
@@ -995,7 +1005,8 @@ button,
   box-shadow: var(--shadow);
 }
 
-.location-info-dialog {
+.location-info-dialog,
+.status-action-dialog {
   width: min(640px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   border: 1px solid var(--line);
@@ -1010,7 +1021,8 @@ button,
   background: rgba(0, 0, 0, 0.68);
 }
 
-.location-info-dialog::backdrop {
+.location-info-dialog::backdrop,
+.status-action-dialog::backdrop {
   background: rgba(0, 0, 0, 0.68);
 }
 
@@ -1065,6 +1077,32 @@ button,
   gap: 12px;
   border-top: 1px solid var(--line);
   padding-top: 16px;
+}
+
+.status-location-list {
+  display: grid;
+  gap: 10px;
+}
+
+.status-location-list form {
+  display: grid;
+}
+
+.status-location-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  min-height: 58px;
+  border-radius: 16px;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.status-location-button small {
+  opacity: 0.78;
+  white-space: nowrap;
 }
 
 .location-info-adherence-header {
@@ -1162,6 +1200,24 @@ button,
   .topbar,
   .page {
     width: min(100% - 20px, 1180px);
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+  }
+
+  .topbar-nav {
+    flex: 1 1 auto;
+  }
+
+  .topbar-actions {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .topbar-status-button {
+    width: 96px;
   }
 
   .topbar,

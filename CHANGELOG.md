@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- Added always-available dashboard quick action buttons for marking locations as healed or relapsed.
+- Added location picker dialogs for healed Phase 1 locations and relapsed Phase 2+ locations.
+- Added empty-state messages when no eligible locations exist for a quick action.
+
+### Changed
+
+- Kept quick action buttons visible across Overview, Settings, and Settings subtabs.
+- Adjusted mobile topbar wrapping so quick action controls stay accessible on narrow screens.
+- Improved empty Upcoming card spacing.
+
+### Notes
+
+- Quick actions reuse the existing dashboard heal and relapse episode endpoints.
+- Browser QA covered desktop, mobile, Settings, all Settings subtabs, and end-to-end quick action flows against a copied database.
+
 ## 0.3.0
 
 ### Added

@@ -399,7 +399,7 @@ scripts/update.sh --skip-backup
 To update to a specific tag or branch:
 
 ```bash
-scripts/update.sh --ref v0.5.0
+scripts/update.sh --ref v0.6.0
 scripts/update.sh --ref origin/main
 ```
 

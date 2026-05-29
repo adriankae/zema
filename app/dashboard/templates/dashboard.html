@@ -16,6 +16,8 @@
           <a href="/dashboard?tab=settings" class="{% if active_tab == 'settings' %}active{% endif %}" aria-current="{% if active_tab == 'settings' %}page{% else %}false{% endif %}">Settings</a>
         </nav>
         <div class="topbar-actions">
+          <button type="button" class="topbar-status-button success-button" data-status-dialog-target="healed-dialog">Healed</button>
+          <button type="button" class="topbar-status-button danger-button" data-status-dialog-target="relapsed-dialog">Relapsed</button>
           <form method="post" action="/dashboard/treatments/undo-last">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="icon-button" type="submit" aria-label="Undo last action">
@@ -749,8 +751,71 @@ ZEMA_PORT=28173</code></pre>
         </form>
         <div id="adherence-detail-dialog-body"></div>
       </dialog>
+      <dialog class="status-action-dialog" id="healed-dialog" aria-labelledby="healed-dialog-title">
+        <form method="dialog">
+          <button type="submit" class="dialog-close" aria-label="Close healed picker">Close</button>
+        </form>
+        <div class="location-info-content">
+          <div>
+            <p class="eyebrow">Mark Healed</p>
+            <h2 id="healed-dialog-title">Which location healed?</h2>
+          </div>
+          {% set phase_one_locations = overview.active_locations|selectattr("phase_number", "equalto", 1)|list %}
+          {% if phase_one_locations %}
+            <div class="status-location-list">
+              {% for item in phase_one_locations %}
+                <form method="post" action="/dashboard/episodes/{{ item.episode_id }}/heal">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="status-location-button success-button" type="submit">
+                    <span>{{ item.location_name|privacy_name(privacy_mode) }}</span>
+                    <small>Phase {{ item.phase_number }}</small>
+                  </button>
+                </form>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="muted">No phase 1 locations can be marked healed.</p>
+          {% endif %}
+        </div>
+      </dialog>
+      <dialog class="status-action-dialog" id="relapsed-dialog" aria-labelledby="relapsed-dialog-title">
+        <form method="dialog">
+          <button type="submit" class="dialog-close" aria-label="Close relapse picker">Close</button>
+        </form>
+        <div class="location-info-content">
+          <div>
+            <p class="eyebrow">Mark Relapsed</p>
+            <h2 id="relapsed-dialog-title">Which location relapsed?</h2>
+          </div>
+          {% set taper_locations = overview.active_locations|rejectattr("phase_number", "equalto", 1)|list %}
+          {% if taper_locations %}
+            <div class="status-location-list">
+              {% for item in taper_locations %}
+                <form method="post" action="/dashboard/episodes/{{ item.episode_id }}/relapse">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="status-location-button secondary-button" type="submit">
+                    <span>{{ item.location_name|privacy_name(privacy_mode) }}</span>
+                    <small>Phase {{ item.phase_number }}</small>
+                  </button>
+                </form>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="muted">No tapering locations can be marked relapsed.</p>
+          {% endif %}
+        </div>
+      </dialog>
     </main>
     <script>
+      document.querySelectorAll("[data-status-dialog-target]").forEach((trigger) => {
+        trigger.addEventListener("click", () => {
+          const statusDialog = document.getElementById(trigger.dataset.statusDialogTarget);
+          if (statusDialog) {
+            statusDialog.showModal();
+          }
+        });
+      });
+
       const dialog = document.getElementById("image-dialog");
       const dialogImage = document.getElementById("image-dialog-img");
       const dialogTitle = document.getElementById("image-dialog-title");

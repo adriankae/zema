@@ -547,6 +547,124 @@ def test_phase_one_upcoming_rows_show_next_and_last_slots(client, monkeypatch):
     assert "14:00" not in upcoming_block
 
 
+def test_overview_quick_status_actions_render_filtered_location_pickers(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 9, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 9, tzinfo=timezone.utc))
+    active_id = _create_phase_one_episode(location_code="quick_healed", location_name="Quick healed")
+    taper_id = _create_taper_episode(location_code="quick_relapsed", location_name="Quick relapsed")
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    topbar_block = response.text.split('class="topbar-actions"', 1)[1].split("</header>", 1)[0]
+    assert 'data-status-dialog-target="healed-dialog"' in response.text
+    assert 'data-status-dialog-target="relapsed-dialog"' in response.text
+    assert 'data-status-dialog-target="healed-dialog"' in topbar_block
+    assert 'data-status-dialog-target="relapsed-dialog"' in topbar_block
+    assert "quick-actions-card" not in response.text
+    healed_dialog = response.text.split('id="healed-dialog"', 1)[1].split('id="relapsed-dialog"', 1)[0]
+    relapsed_dialog = response.text.split('id="relapsed-dialog"', 1)[1].split("</dialog>", 1)[0]
+    assert "Which location healed?" in healed_dialog
+    assert "Quick healed" in healed_dialog
+    assert f'action="/dashboard/episodes/{active_id}/heal"' in healed_dialog
+    assert "Quick relapsed" not in healed_dialog
+    assert "Which location relapsed?" in relapsed_dialog
+    assert "Quick relapsed" in relapsed_dialog
+    assert f'action="/dashboard/episodes/{taper_id}/relapse"' in relapsed_dialog
+    assert "Quick healed" not in relapsed_dialog
+
+
+def test_overview_quick_status_actions_show_empty_states(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 9, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 9, tzinfo=timezone.utc))
+    _login(client)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "No phase 1 locations can be marked healed." in response.text
+    assert "No tapering locations can be marked relapsed." in response.text
+
+
+def test_settings_tab_keeps_quick_status_actions_available(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 5, 26, 9, tzinfo=timezone.utc))
+    monkeypatch.setattr(read_model, "utc_now", lambda: datetime(2026, 5, 26, 9, tzinfo=timezone.utc))
+    active_id = _create_phase_one_episode(location_code="settings_quick_healed", location_name="Settings quick healed")
+    taper_id = _create_taper_episode(location_code="settings_quick_relapsed", location_name="Settings quick relapsed")
+    _login(client)
+
+    response = client.get("/dashboard?tab=settings")
+
+    assert response.status_code == 200
+    topbar_block = response.text.split('class="topbar-actions"', 1)[1].split("</header>", 1)[0]
+    assert 'data-status-dialog-target="healed-dialog"' in topbar_block
+    assert 'data-status-dialog-target="relapsed-dialog"' in topbar_block
+    assert f'action="/dashboard/episodes/{active_id}/heal"' in response.text
+    assert f'action="/dashboard/episodes/{taper_id}/relapse"' in response.text
+
+
+def test_quick_healed_picker_marks_selected_phase_one_location_healed(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.dashboard.routes as dashboard_routes
+    import app.services as services
+
+    now = datetime(2026, 5, 26, 16, tzinfo=timezone.utc)
+    monkeypatch.setattr(dashboard_routes, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    episode_id = _create_phase_one_episode(location_code="quick_heal_submit", location_name="Quick heal submit")
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard").text)
+
+    response = client.post(f"/dashboard/episodes/{episode_id}/heal", data={"csrf_token": csrf}, follow_redirects=False)
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        episode = db.get(EczemaEpisode, episode_id)
+        assert episode.status == "in_taper"
+        assert episode.current_phase_number == 2
+        assert episode.healed_at.replace(tzinfo=timezone.utc) == now
+    finally:
+        db.close()
+
+
+def test_quick_relapsed_picker_marks_selected_taper_location_relapsed(client, monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.dashboard.routes as dashboard_routes
+    import app.services as services
+
+    now = datetime(2026, 5, 27, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(dashboard_routes, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    episode_id = _create_taper_episode(location_code="quick_relapse_submit", location_name="Quick relapse submit")
+    _login(client)
+    csrf = _csrf_token(client.get("/dashboard").text)
+
+    response = client.post(f"/dashboard/episodes/{episode_id}/relapse", data={"csrf_token": csrf}, follow_redirects=False)
+
+    assert response.status_code == 303
+    db = SessionLocal()
+    try:
+        episode = db.get(EczemaEpisode, episode_id)
+        assert episode.status == "active_flare"
+        assert episode.current_phase_number == 1
+        assert episode.healed_at is None
+    finally:
+        db.close()
+
+
 def test_location_info_buttons_render_phase_changes_and_location_adherence(client, monkeypatch):
     import app.dashboard.read_model as read_model
     import app.services as services

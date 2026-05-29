@@ -381,6 +381,13 @@ For a normal Docker Compose install, update from the repository root:
 scripts/update.sh
 ```
 
+For example, on a persistent server checkout:
+
+```bash
+cd /srv/czmbot/zema
+scripts/update.sh --ref v0.6.1
+```
+
 The script:
 
 1. Refuses to run if tracked local files have uncommitted changes.
@@ -401,6 +408,25 @@ To update to a specific tag or branch:
 ```bash
 scripts/update.sh --ref v0.6.1
 scripts/update.sh --ref origin/main
+```
+
+Manual updates are possible, but the script is safer because it backs up when
+possible and checks service health. The equivalent manual flow is:
+
+```bash
+cd /srv/czmbot/zema
+git fetch origin
+git merge --ff-only v0.6.1
+docker compose up -d --build
+curl -fsS http://127.0.0.1:28173/health
+```
+
+If the Telegram service is running, `scripts/update.sh` detects that and restarts
+Compose with the `telegram` profile. For manual updates with Telegram enabled,
+use:
+
+```bash
+docker compose --profile telegram up -d --build
 ```
 
 If you expose Zema through a reverse proxy on the same machine, keep the default local bind:

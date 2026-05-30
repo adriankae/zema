@@ -2,6 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-zema}
 
 services:
   postgres:
+    container_name: zema-postgres
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
@@ -19,6 +20,7 @@ services:
       - zema-postgres-data:/var/lib/postgresql/data
 
   zema-be:
+    container_name: zema-be
     build:
       context: .
       dockerfile: docker/api.Dockerfile
@@ -45,6 +47,7 @@ services:
       - zema-location-images:/data/location-images
 
   zema-cli:
+    container_name: zema-cli
     build:
       context: .
       dockerfile: docker/cli.Dockerfile
@@ -58,6 +61,7 @@ services:
       - cli
 
   zema-telegram:
+    container_name: zema-telegram
     build:
       context: .
       dockerfile: docker/telegram.Dockerfile
@@ -86,4 +90,6 @@ services:
 
 volumes:
   zema-postgres-data:
+    name: zema-postgres-data
   zema-location-images:
+    name: zema-location-images

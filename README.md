@@ -367,8 +367,8 @@ curl -sS http://localhost:28173/health
 The long-running services use `restart: unless-stopped`, so Docker restarts them after reboot as long as Docker itself starts. Data persists in named Docker volumes:
 
 ```text
-zema_zema-postgres-data
-zema_zema-location-images
+zema-postgres-data
+zema-location-images
 ```
 
 Keep `.env` private. It contains secrets and should not be committed. Back up `.env`, the Postgres volume, and the location image volume. `docker compose down` stops containers but keeps named volumes; `docker compose down -v` deletes named volumes and destroys database/image data.

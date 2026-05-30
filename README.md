@@ -367,11 +367,24 @@ curl -sS http://localhost:28173/health
 The long-running services use `restart: unless-stopped`, so Docker restarts them after reboot as long as Docker itself starts. Data persists in named Docker volumes:
 
 ```text
-zema-postgres-data
-zema-location-images
+eczema-tracker_zema-postgres-data
+eczema-tracker_zema-location-images
 ```
 
 Keep `.env` private. It contains secrets and should not be committed. Back up `.env`, the Postgres volume, and the location image volume. `docker compose down` stops containers but keeps named volumes; `docker compose down -v` deletes named volumes and destroys database/image data.
+
+Keep the Compose project name stable. Zema defaults to:
+
+```env
+COMPOSE_PROJECT_NAME=eczema-tracker
+```
+
+Docker Compose includes the project name in volume names. If you change the
+project name, Compose creates new empty volumes, and the app will look like a
+fresh install with the default `admin/admin` account and no Telegram setup. The
+application itself only seeds the default account when the database is empty; it
+does not overwrite an existing password or Telegram configuration during normal
+startup.
 
 ## Updating Zema
 
@@ -385,7 +398,7 @@ For example, on a persistent server checkout:
 
 ```bash
 cd /srv/czmbot/zema
-scripts/update.sh --ref v0.6.1
+scripts/update.sh --ref v0.6.3
 ```
 
 The script:
@@ -394,7 +407,7 @@ The script:
 2. Exports a JSON backup first when `CZM_API_KEY` is available in the environment or `.env`.
 3. Fetches `origin`.
 4. Fast-forwards to `origin/main`.
-5. Rebuilds and restarts Docker Compose.
+5. Rebuilds and restarts Docker Compose with `COMPOSE_PROJECT_NAME=eczema-tracker` unless you explicitly override it.
 6. Waits for `/health` to pass.
 
 If you already made a manual backup, or you cannot provide an API key, you can explicitly skip the backup step:
@@ -406,7 +419,7 @@ scripts/update.sh --skip-backup
 To update to a specific tag or branch:
 
 ```bash
-scripts/update.sh --ref v0.6.1
+scripts/update.sh --ref v0.6.3
 scripts/update.sh --ref origin/main
 ```
 
@@ -416,7 +429,7 @@ possible and checks service health. The equivalent manual flow is:
 ```bash
 cd /srv/czmbot/zema
 git fetch origin
-git merge --ff-only v0.6.1
+git merge --ff-only v0.6.3
 docker compose up -d --build
 curl -fsS http://127.0.0.1:28173/health
 ```

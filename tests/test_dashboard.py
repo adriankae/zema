@@ -1481,7 +1481,7 @@ def test_dashboard_topbar_is_fixed_and_contains_session_actions(client):
     assert 'class="topbar-shell"' in response.text
     assert 'class="brand-link"' in response.text
     assert "<span>Zema</span>" in response.text
-    assert "<small>v0.6.1</small>" in response.text
+    assert "<small>v0.6.3</small>" in response.text
     assert 'class="topbar-actions"' in response.text
     assert 'href="/dashboard?tab=settings"' in response.text
     assert 'aria-label="Undo last action"' in response.text

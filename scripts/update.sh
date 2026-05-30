@@ -45,6 +45,8 @@ done
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-eczema-tracker}"
+
 if ! command -v git >/dev/null 2>&1; then
   echo "git is required." >&2
   exit 1

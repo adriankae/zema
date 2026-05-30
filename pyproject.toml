@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eczema-tracker"
-version = "0.6.1"
+version = "0.6.3"
 description = "Self-hosted eczema treatment tracker backend"
 requires-python = ">=3.11,<4.0"
 dependencies = [

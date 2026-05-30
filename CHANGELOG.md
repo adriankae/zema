@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.3
+
+### Changed
+
+- Stabilized the Docker Compose project name as `eczema-tracker` so updates keep using the existing Postgres and location-image volumes even when the repository directory name changes.
+- Updated the production update script to enforce the same stable Compose project name unless explicitly overridden.
+- Documented the Compose project name as part of the persistence contract for production installs.
+- Bumped the dashboard version tag to `v0.6.3`.
+
+### Fixed
+
+- Prevented updates from appearing to reset an installed system to the initial `admin/admin` account by avoiding accidental creation of a new empty Docker volume.
+- Preserved existing Telegram bot setup across updates by keeping the backend pointed at the existing database volume.
+
+### Tests
+
+- Added regression coverage proving startup bootstrap does not overwrite an existing account password.
+- Added regression coverage proving startup bootstrap does not overwrite existing Telegram bot settings.
+- Added regression coverage for the stable Compose project-name default.
+
+## 0.6.2
+
+### Added
+
+- Documented the production update process in the README.
+
+### Notes
+
+- This release was documentation-only and did not change runtime behavior.
+
 ## 0.6.1
 
 ### Added

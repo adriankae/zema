@@ -933,9 +933,12 @@ def test_dashboard_backup_tab_exposes_import_export_controls(client):
 
 def test_dashboard_telegram_tab_saves_token_and_chat_ids(client, monkeypatch):
     import app.telegram_settings as telegram_settings
+    import app.dashboard.routes as dashboard_routes
 
     monkeypatch_bot = type("Bot", (), {"username": "zema_bot"})()
     monkeypatch.setattr(telegram_settings, "validate_bot_token", lambda _token: monkeypatch_bot)
+    sent_messages = []
+    monkeypatch.setattr(dashboard_routes, "send_telegram_setup_success", lambda _db, _account: sent_messages.append(True))
     _login(client)
     dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
     token = _csrf_token(dashboard.text)
@@ -962,10 +965,11 @@ def test_dashboard_telegram_tab_saves_token_and_chat_ids(client, monkeypatch):
     assert response.status_code == 303
     refreshed = client.get("/dashboard?tab=settings&settings_tab=telegram")
     assert "Telegram Bot" in refreshed.text
-    assert "Ready to enable" in refreshed.text
+    assert "Starting bot" in refreshed.text
     assert "@zema_bot" in refreshed.text
     assert "Chat: 111, 222" in refreshed.text
     assert "Save Telegram settings" not in refreshed.text
+    assert sent_messages == [True]
     db = SessionLocal()
     try:
         account = db.query(Account).filter(Account.username == "admin").one()
@@ -974,13 +978,15 @@ def test_dashboard_telegram_tab_saves_token_and_chat_ids(client, monkeypatch):
         row = db.query(TelegramBotSettings).filter(TelegramBotSettings.account_id == account.id).one()
         assert row.allow_writes is True
         assert row.allow_adherence_rebuild is False
-        assert row.is_enabled is False
+        assert row.is_enabled is True
+        assert row.runtime_status == "starting"
     finally:
         db.close()
 
 
 def test_dashboard_telegram_wizard_discovers_chats(client, monkeypatch):
     import app.telegram_settings as telegram_settings
+    import app.dashboard.routes as dashboard_routes
     from czm_cli.telegram.setup import DiscoveredChat
 
     monkeypatch.setattr(telegram_settings, "validate_bot_token", lambda _token: type("Bot", (), {"username": "zema_bot"})())
@@ -989,6 +995,8 @@ def test_dashboard_telegram_wizard_discovers_chats(client, monkeypatch):
         "discover_chats",
         lambda _token: [DiscoveredChat(id=444, type="private", title="Adrian", user_id=555)],
     )
+    sent_messages = []
+    monkeypatch.setattr(dashboard_routes, "send_telegram_setup_success", lambda _db, _account: sent_messages.append(True))
     _login(client)
     dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
     token = _csrf_token(dashboard.text)
@@ -1005,11 +1013,13 @@ def test_dashboard_telegram_wizard_discovers_chats(client, monkeypatch):
     response = client.post("/dashboard/telegram/discover", data={"csrf_token": token}, follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/dashboard?tab=settings&settings_tab=telegram&telegram_chat_linked=1"
-    refreshed = client.get("/dashboard?tab=settings&settings_tab=telegram&telegram_chat_linked=1")
-    assert "Chat linked." in refreshed.text
+    assert response.headers["location"] == "/dashboard?tab=settings&settings_tab=telegram&telegram_enabled=1"
+    refreshed = client.get("/dashboard?tab=settings&settings_tab=telegram&telegram_enabled=1")
+    assert "Bot is starting." in refreshed.text
+    assert "Starting bot" in refreshed.text
     assert "Chat: 444" in refreshed.text
-    assert "Enable Bot" in refreshed.text
+    assert "Enable Bot" not in refreshed.text
+    assert sent_messages == [True]
     db = SessionLocal()
     try:
         account = db.query(Account).filter(Account.username == "admin").one()
@@ -1018,6 +1028,8 @@ def test_dashboard_telegram_wizard_discovers_chats(client, monkeypatch):
         row = db.query(TelegramBotSettings).filter(TelegramBotSettings.account_id == account.id).one()
         assert row.allowed_chat_ids == [444]
         assert row.allowed_user_ids == []
+        assert row.is_enabled is True
+        assert row.runtime_status == "starting"
     finally:
         db.close()
 
@@ -1053,7 +1065,7 @@ def test_dashboard_telegram_discover_multiple_chats_requires_selection(client, m
     assert 'value="444"' in response.text
     assert "Family" in response.text
     assert 'value="777"' in response.text
-    assert "Use selected chat" in response.text
+    assert "Use selected chat and enable bot" in response.text
     assert "chat · 444" not in response.text
 
 
@@ -1122,8 +1134,11 @@ def test_dashboard_telegram_token_error_stays_in_wizard(client, monkeypatch):
 
 def test_dashboard_telegram_enable_requires_chat_and_creates_api_key(client, monkeypatch):
     import app.telegram_settings as telegram_settings
+    import app.dashboard.routes as dashboard_routes
 
     monkeypatch.setattr(telegram_settings, "validate_bot_token", lambda _token: type("Bot", (), {"username": "zema_bot"})())
+    sent_messages = []
+    monkeypatch.setattr(dashboard_routes, "send_telegram_setup_success", lambda _db, _account: sent_messages.append(True))
     _login(client)
     dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
     token = _csrf_token(dashboard.text)
@@ -1141,14 +1156,11 @@ def test_dashboard_telegram_enable_requires_chat_and_creates_api_key(client, mon
 
     dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
     token = _csrf_token(dashboard.text)
-    client.post(
+    enabled = client.post(
         "/dashboard/telegram",
         data={"csrf_token": token, "allowed_chat_ids": "111"},
         follow_redirects=False,
     )
-    dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
-    token = _csrf_token(dashboard.text)
-    enabled = client.post("/dashboard/telegram/enable", data={"csrf_token": token}, follow_redirects=False)
 
     assert enabled.status_code == 303
     assert enabled.headers["location"] == "/dashboard?tab=settings&settings_tab=telegram&telegram_enabled=1"
@@ -1156,6 +1168,8 @@ def test_dashboard_telegram_enable_requires_chat_and_creates_api_key(client, mon
     assert "Bot is starting." in refreshed.text
     assert "Starting bot" in refreshed.text
     assert "Starting bot. This can take a few seconds." in refreshed.text
+    assert "Enable Bot" not in refreshed.text
+    assert sent_messages == [True]
     db = SessionLocal()
     try:
         account = db.query(Account).filter(Account.username == "admin").one()
@@ -1172,8 +1186,10 @@ def test_dashboard_telegram_enable_requires_chat_and_creates_api_key(client, mon
 
 def test_dashboard_telegram_active_status_hides_completed_wizard(client, monkeypatch):
     import app.telegram_settings as telegram_settings
+    import app.dashboard.routes as dashboard_routes
 
     monkeypatch.setattr(telegram_settings, "validate_bot_token", lambda _token: type("Bot", (), {"username": "zema_bot"})())
+    monkeypatch.setattr(dashboard_routes, "send_telegram_setup_success", lambda _db, _account: None)
     _login(client)
     dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
     token = _csrf_token(dashboard.text)
@@ -1217,8 +1233,10 @@ def test_dashboard_telegram_active_status_hides_completed_wizard(client, monkeyp
 
 def test_dashboard_telegram_reset_deletes_token_chat_ids_and_api_key(client, monkeypatch):
     import app.telegram_settings as telegram_settings
+    import app.dashboard.routes as dashboard_routes
 
     monkeypatch.setattr(telegram_settings, "validate_bot_token", lambda _token: type("Bot", (), {"username": "zema_bot"})())
+    monkeypatch.setattr(dashboard_routes, "send_telegram_setup_success", lambda _db, _account: None)
     _login(client)
     dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
     token = _csrf_token(dashboard.text)
@@ -1234,9 +1252,6 @@ def test_dashboard_telegram_reset_deletes_token_chat_ids_and_api_key(client, mon
         data={"csrf_token": token, "allowed_chat_ids": "111", "allowed_user_ids": "222"},
         follow_redirects=False,
     )
-    dashboard = client.get("/dashboard?tab=settings&settings_tab=telegram")
-    token = _csrf_token(dashboard.text)
-    client.post("/dashboard/telegram/enable", data={"csrf_token": token}, follow_redirects=False)
     db = SessionLocal()
     try:
         account = db.query(Account).filter(Account.username == "admin").one()

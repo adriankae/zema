@@ -69,7 +69,9 @@ def test_docker_compose_project_name_is_stable_for_volume_persistence():
 
     assert "name: ${COMPOSE_PROJECT_NAME:-zema}" in compose
     assert "container_name: zema-be" in compose
+    assert "container_name: zema-telegram" in compose
     assert "name: zema-postgres-data" in compose
     assert "name: zema-location-images" in compose
+    assert "      - telegram" not in compose
     assert 'export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-zema}"' in update_script
     assert "COMPOSE_PROJECT_NAME=zema" in env_example

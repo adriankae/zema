@@ -85,8 +85,6 @@ services:
         condition: service_started
     volumes:
       - zema-location-images:/data/location-images
-    profiles:
-      - telegram
 
 volumes:
   zema-postgres-data:

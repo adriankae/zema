@@ -644,6 +644,7 @@ ZEMA_PORT=28173</code></pre>
 
             {% if not telegram.setup_complete %}
             <div class="telegram-wizard settings-form">
+              {% if telegram.current_step == 1 %}
               <section class="wizard-step {% if telegram.current_step == 1 %}wizard-current{% endif %}">
                 <div class="wizard-step-marker">1</div>
                 <div class="wizard-step-body">
@@ -656,7 +657,9 @@ ZEMA_PORT=28173</code></pre>
                   </form>
                 </div>
               </section>
+              {% endif %}
 
+              {% if telegram.current_step == 2 %}
               <section class="wizard-step {% if telegram.current_step == 2 %}wizard-current{% endif %}">
                 <div class="wizard-step-marker">2</div>
                 <div class="wizard-step-body">
@@ -687,39 +690,36 @@ ZEMA_PORT=28173</code></pre>
                           </span>
                         </label>
                       {% endfor %}
-                      <button type="submit">Use selected chat</button>
+                      <button type="submit">Use selected chat and enable bot</button>
                     </form>
                   {% elif telegram.allowed_chat_ids %}
                     <p class="muted">Chat linked.</p>
                   {% endif %}
                 </div>
               </section>
+              {% endif %}
 
+              {% if telegram.current_step == 3 %}
               <section class="wizard-step {% if telegram.current_step == 3 %}wizard-current{% endif %}">
                 <div class="wizard-step-marker">3</div>
                 <div class="wizard-step-body">
-                  <h4>Enable Bot</h4>
-                  {% if telegram.allowed_chat_ids %}
-                    <p class="muted">Your chat is linked. Turn the bot on when you are ready.</p>
-                  {% else %}
-                    <p class="muted">Find your chat before enabling the bot.</p>
-                  {% endif %}
-                  <div class="telegram-actions">
-                    <form method="post" action="/dashboard/telegram/enable">
-                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                      <button type="submit"{% if not telegram.configured or not telegram.allowed_chat_ids or telegram.enabled %} disabled{% endif %}>Enable Bot</button>
-                    </form>
-                  </div>
                   {% if telegram.runtime_status == 'active' and telegram.telegram_url %}
+                    <h4>Bot active</h4>
                     <p class="muted">Bot active. Open Telegram and send <code>/menu</code> to test it.</p>
                     <a class="button-link telegram-open-link" href="{{ telegram.telegram_url }}" target="_blank" rel="noopener">Open Telegram</a>
                   {% elif telegram.enabled %}
+                    <h4>Starting bot</h4>
                     <p class="muted">Starting bot. This can take a few seconds.</p>
                   {% elif not telegram.allowed_chat_ids %}
-                    <p class="muted">Enable Bot becomes available after your chat is linked.</p>
+                    <h4>Find your chat</h4>
+                    <p class="muted">Find your chat to continue.</p>
+                  {% else %}
+                    <h4>Bot ready</h4>
+                    <p class="muted">Your chat is linked. Zema enables the bot automatically.</p>
                   {% endif %}
                 </div>
               </section>
+              {% endif %}
 
               {% if telegram.configured %}
                 <details class="telegram-runtime-note">

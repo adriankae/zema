@@ -105,13 +105,8 @@ git fetch origin
 echo "Fast-forwarding to ${ref}"
 git merge --ff-only "$ref"
 
-compose_args=()
-if docker compose ps --services --filter status=running 2>/dev/null | grep -qx "zema-telegram"; then
-  compose_args+=(--profile telegram)
-fi
-
 echo "Rebuilding and restarting Zema"
-docker compose "${compose_args[@]}" up -d --build
+docker compose up -d --build
 
 echo "Waiting for health check at ${base_url}/health"
 for _ in $(seq 1 30); do

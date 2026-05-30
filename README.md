@@ -120,7 +120,7 @@ Zema is self-hosted:
 - `zema-be` is the web app and backend.
 - `postgres` stores treatment history, phase state, adherence, and account data.
 - `zema-cli` is optional for command-line use.
-- `zema-telegram` is optional for the Telegram bot.
+- `zema-telegram` runs the Telegram bot runtime and stays idle until the bot is enabled in Settings.
 
 Your local Docker volumes keep the database and location images. Do not run `docker compose down -v` unless you want to delete that data.
 
@@ -184,7 +184,7 @@ cli/                 Separate CLI package
 cli/docs/            CLI-specific docs
 cli/skills/          Agent Skills package
 docker/              Backend and CLI Dockerfiles
-docker-compose.yml   Local postgres, zema-be, and profiled zema-cli services
+docker-compose.yml   Local postgres, zema-be, zema-telegram, and profiled zema-cli services
 ```
 
 The CLI package is still named `czm-cli` and its internal Python package is still under `cli/src/czm_cli`. The public command name is `zema`, with `czm` kept as a compatibility alias.
@@ -284,7 +284,7 @@ export CZM_API_KEY="..."
 export ZEMA_TELEGRAM_BOT_TOKEN="..."
 export ZEMA_TELEGRAM_ALLOWED_CHAT_IDS="123456789"
 
-docker compose --profile telegram up -d zema-telegram
+docker compose up -d zema-telegram
 docker compose logs -f zema-telegram
 ```
 
@@ -330,7 +330,7 @@ Docker Compose uses `CZM_TIMEZONE` for both backend due-slot logic and Telegram/
 Start the persistent backend and Telegram bot:
 
 ```bash
-docker compose --profile telegram up -d postgres zema-be zema-telegram
+docker compose up -d postgres zema-be zema-telegram
 ```
 
 Inspect the stack:
@@ -434,13 +434,8 @@ docker compose up -d --build
 curl -fsS http://127.0.0.1:28173/health
 ```
 
-If the Telegram service is running, `scripts/update.sh` detects that and restarts
-Compose with the `telegram` profile. For manual updates with Telegram enabled,
-use:
-
-```bash
-docker compose --profile telegram up -d --build
-```
+The Telegram runtime is part of the default Compose stack. It stays idle until a
+bot is enabled in Settings.
 
 If you expose Zema through a reverse proxy on the same machine, keep the default local bind:
 
@@ -1026,7 +1021,7 @@ zema telegram run
 Docker Telegram smoke test:
 
 ```bash
-docker compose --profile telegram up -d zema-telegram
+docker compose up -d zema-telegram
 docker compose logs -f zema-telegram
 ```
 

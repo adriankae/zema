@@ -4,6 +4,7 @@ import base64
 import hashlib
 from dataclasses import dataclass
 
+import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -117,7 +118,9 @@ class TelegramSettingsView:
             return "The bot is shutting down. Wait a moment before changing chats."
         if not self.allowed_chat_ids:
             return "Open the bot in Telegram, send /start, then find your chat."
-        return "Your chat is linked. Enable the bot when you are ready."
+        if self.enabled:
+            return "The Telegram runtime is starting. If this does not change soon, check the zema-telegram logs."
+        return "Your chat is linked. Zema will enable the bot automatically."
 
 
 def get_telegram_settings(db: Session, account: Account) -> TelegramBotSettings | None:
@@ -251,6 +254,25 @@ def set_telegram_enabled(db: Session, account: Account, enabled: bool) -> Telegr
     db.commit()
     db.refresh(row)
     return row
+
+
+def send_telegram_setup_success(db: Session, account: Account) -> None:
+    row = get_telegram_settings(db, account)
+    token = decrypt_secret(row.bot_token_encrypted if row else None)
+    if row is None or not token or not row.allowed_chat_ids:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="telegram setup is incomplete")
+    message = "Zema is connected. Send /menu to start using the bot."
+    for chat_id in row.allowed_chat_ids:
+        try:
+            response = httpx.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": message},
+                timeout=10,
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Telegram setup message failed") from exc
+        if response.status_code >= 400:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Telegram setup message failed")
 
 
 def reset_telegram_settings(db: Session, account: Account) -> None:

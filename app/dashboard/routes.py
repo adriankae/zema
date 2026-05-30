@@ -40,6 +40,7 @@ from app.telegram_settings import (
     reset_telegram_settings,
     save_telegram_bot_token,
     save_telegram_settings,
+    send_telegram_setup_success,
     set_telegram_enabled,
     telegram_settings_view,
 )
@@ -418,9 +419,11 @@ def dashboard_update_telegram(
             allow_adherence_rebuild=False,
             is_enabled=None,
         )
+        set_telegram_enabled(db, account, True)
+        send_telegram_setup_success(db, account)
     except HTTPException as exc:
         return _telegram_settings_html(request, db, account, error=str(exc.detail), status_code=exc.status_code)
-    return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_saved=1", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_enabled=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/telegram/token")
@@ -456,17 +459,22 @@ def dashboard_discover_telegram_chats(
     except HTTPException as exc:
         return _telegram_settings_html(request, db, account, error=str(exc.detail), status_code=exc.status_code)
     if len(chats) == 1:
-        save_telegram_settings(
-            db,
-            account,
-            bot_token=None,
-            allowed_chat_ids=[chats[0].id],
-            allowed_user_ids=[],
-            allow_writes=True,
-            allow_adherence_rebuild=False,
-            is_enabled=None,
-        )
-        return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_chat_linked=1", status_code=status.HTTP_303_SEE_OTHER)
+        try:
+            save_telegram_settings(
+                db,
+                account,
+                bot_token=None,
+                allowed_chat_ids=[chats[0].id],
+                allowed_user_ids=[],
+                allow_writes=True,
+                allow_adherence_rebuild=False,
+                is_enabled=None,
+            )
+            set_telegram_enabled(db, account, True)
+            send_telegram_setup_success(db, account)
+        except HTTPException as exc:
+            return _telegram_settings_html(request, db, account, error=str(exc.detail), status_code=exc.status_code)
+        return RedirectResponse("/dashboard?tab=settings&settings_tab=telegram&telegram_enabled=1", status_code=status.HTTP_303_SEE_OTHER)
     overview = _overview_from_request(db, account, request)
     telegram = telegram_settings_view(db, account)
     telegram.discovered_chats.extend(chats)

@@ -398,7 +398,7 @@ For example, on a persistent server checkout:
 
 ```bash
 cd /srv/czmbot/zema
-scripts/update.sh --ref v0.6.3
+scripts/update.sh --ref v0.6.4
 ```
 
 The script:
@@ -419,7 +419,7 @@ scripts/update.sh --skip-backup
 To update to a specific tag or branch:
 
 ```bash
-scripts/update.sh --ref v0.6.3
+scripts/update.sh --ref v0.6.4
 scripts/update.sh --ref origin/main
 ```
 
@@ -429,7 +429,7 @@ possible and checks service health. The equivalent manual flow is:
 ```bash
 cd /srv/czmbot/zema
 git fetch origin
-git merge --ff-only v0.6.3
+git merge --ff-only v0.6.4
 docker compose up -d --build
 curl -fsS http://127.0.0.1:28173/health
 ```

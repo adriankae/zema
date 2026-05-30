@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.4
+
+### Changed
+
+- Simplified the Telegram setup wizard so only the current setup step is visible.
+- Removed the separate Telegram enable step from the normal wizard flow.
+- Enabled the Telegram bot automatically after a chat is selected.
+- Started the `zema-telegram` runtime as part of the default Docker Compose stack so enabled bots can leave `starting` state without a separate Compose profile.
+- Updated Telegram Docker docs and helper scripts to use the default Compose stack.
+- Bumped the dashboard version tag to `v0.6.4`.
+
+### Added
+
+- Sent a Telegram success message after setup completes: `Zema is connected. Send /menu to start using the bot.`
+- Added regression coverage for the streamlined Telegram setup flow and default Telegram runtime service.
+
 ## 0.6.3
 
 ### Changed

@@ -67,7 +67,7 @@ def _app_version() -> str:
             APP_VERSION = tomllib.load(handle)["project"]["version"]
     except (OSError, KeyError, tomllib.TOMLDecodeError):
         try:
-            APP_VERSION = metadata.version("eczema-tracker")
+            APP_VERSION = metadata.version("zema")
         except metadata.PackageNotFoundError:
             APP_VERSION = "unknown"
     return APP_VERSION

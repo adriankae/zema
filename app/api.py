@@ -195,7 +195,7 @@ def health() -> dict:
 
 @router.get("/")
 def root() -> dict[str, str]:
-    return {"service": "eczema-tracker"}
+    return {"service": "zema"}
 
 
 @router.post("/auth/login", response_model=LoginResponse)

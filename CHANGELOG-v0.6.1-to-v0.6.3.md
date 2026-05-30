@@ -6,7 +6,9 @@ Release target: `v0.6.3`
 
 ### Changed
 
-- Stabilized Docker Compose under the project name `eczema-tracker`.
+- Stabilized Docker Compose under the project name `zema`.
+- Changed the default Postgres host port from `5432` to `15432`.
+- Renamed the backend package/service identifier to `zema`.
 - Updated `scripts/update.sh` so normal updates keep using the same Compose project name unless explicitly overridden.
 - Documented that the Compose project name is part of the production data-persistence contract.
 - Updated the dashboard version tag to `v0.6.3`.

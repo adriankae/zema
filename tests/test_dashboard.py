@@ -2012,7 +2012,7 @@ def test_docker_compose_defaults_bind_dashboard_to_localhost():
     env_example = Path(".env.example").read_text()
 
     assert "${ZEMA_HOST_BIND:-127.0.0.1}:${ZEMA_PORT:-28173}:28173" in compose
-    assert "${ZEMA_POSTGRES_HOST_BIND:-127.0.0.1}:${ZEMA_POSTGRES_PORT:-5432}:5432" in compose
+    assert "${ZEMA_POSTGRES_HOST_BIND:-127.0.0.1}:${ZEMA_POSTGRES_PORT:-15432}:5432" in compose
     assert "ZEMA_HOST_BIND=127.0.0.1" in env_example
     assert "ZEMA_PORT=28173" in env_example
     assert "ZEMA_POSTGRES_HOST_BIND=127.0.0.1" in env_example

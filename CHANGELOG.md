@@ -4,7 +4,9 @@
 
 ### Changed
 
-- Stabilized the Docker Compose project name as `eczema-tracker` so updates keep using the existing Postgres and location-image volumes even when the repository directory name changes.
+- Stabilized the Docker Compose project name as `zema` so updates keep using the Zema Postgres and location-image volumes consistently.
+- Changed the default Postgres host port from `5432` to `15432` to avoid collisions with other local Postgres containers.
+- Renamed the backend package/service identifier to `zema`.
 - Updated the production update script to enforce the same stable Compose project name unless explicitly overridden.
 - Documented the Compose project name as part of the persistence contract for production installs.
 - Bumped the dashboard version tag to `v0.6.3`.

@@ -67,6 +67,6 @@ def test_docker_compose_project_name_is_stable_for_volume_persistence():
     update_script = Path("scripts/update.sh").read_text(encoding="utf-8")
     env_example = Path(".env.example").read_text(encoding="utf-8")
 
-    assert "name: ${COMPOSE_PROJECT_NAME:-eczema-tracker}" in compose
-    assert 'export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-eczema-tracker}"' in update_script
-    assert "COMPOSE_PROJECT_NAME=eczema-tracker" in env_example
+    assert "name: ${COMPOSE_PROJECT_NAME:-zema}" in compose
+    assert 'export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-zema}"' in update_script
+    assert "COMPOSE_PROJECT_NAME=zema" in env_example

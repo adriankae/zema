@@ -233,6 +233,36 @@ def test_phase_one_due_uses_morning_and_evening_slots(client, auth_headers, monk
     assert client.get("/episodes/due", headers=auth_headers).json()["due"] == []
 
 
+def test_due_items_accepts_explicit_now_without_reading_service_clock(monkeypatch):
+    import app.services as services
+    from app.core.database import SessionLocal
+    from app.models import Account
+    from app.services import create_episode, create_location, create_subject, due_items
+
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        subject = create_subject(db, account, "Explicit due clock")
+        location = create_location(db, account, "explicit_due_clock", "Explicit due clock")
+        episode = create_episode(
+            db,
+            account,
+            subject.id,
+            location.id,
+            "v1",
+            datetime(2026, 4, 6, 8, tzinfo=timezone.utc),
+            "user",
+            "test",
+        )
+        monkeypatch.setattr(services, "utc_now", lambda: (_ for _ in ()).throw(AssertionError("unexpected service clock read")))
+
+        items = due_items(db, account, now=datetime(2026, 4, 6, 9, tzinfo=timezone.utc))
+
+        assert [item["episode_id"] for item in items] == [episode.id]
+    finally:
+        db.close()
+
+
 def test_phase_one_evening_due_in_berlin_after_morning_applications(client, auth_headers, monkeypatch):
     import app.api as api
     import app.services as services

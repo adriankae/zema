@@ -4,6 +4,8 @@ from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
+import pytest
+
 from app.core.database import SessionLocal
 from app.core.security import verify_password
 from app.core.time import utc_now
@@ -495,6 +497,326 @@ def test_upcoming_section_renders_active_and_tapering_non_due_episodes(client, m
     assert "Taper clear" in response.text
     assert "Phase 1" in response.text
     assert "Phase 2" in response.text
+
+
+def test_dashboard_overview_uses_one_read_model_clock_for_all_projections(monkeypatch):
+    import app.adherence as adherence
+    import app.dashboard.read_model as read_model
+    import app.services as services
+
+    now = datetime(2026, 5, 26, 12, tzinfo=timezone.utc)
+    clock_calls = []
+    db = SessionLocal()
+    try:
+        from app.models import Account
+
+        account = db.query(Account).filter(Account.username == "admin").one()
+        due_id = _create_phase_one_episode(location_code="clock_due", location_name="Clock due")
+        upcoming_id = _create_taper_episode(
+            location_code="clock_upcoming",
+            location_name="Clock upcoming",
+            healed_at=datetime(2026, 5, 25, 8, tzinfo=timezone.utc),
+        )
+    finally:
+        db.close()
+
+    def read_model_now():
+        clock_calls.append(now)
+        return now
+
+    monkeypatch.setattr(read_model, "utc_now", read_model_now)
+    monkeypatch.setattr(services, "utc_now", lambda: pytest.fail("dashboard must pass its explicit clock to services"))
+    monkeypatch.setattr(adherence, "utc_now", lambda: pytest.fail("dashboard must pass its explicit clock to adherence"))
+
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        overview = read_model.build_dashboard_overview(
+            db,
+            account,
+            adherence_range="custom",
+            from_date=date(2026, 5, 26),
+            to_date=date(2026, 5, 26),
+        )
+    finally:
+        db.close()
+
+    assert clock_calls == [now]
+    assert overview.generated_at == now
+    assert [row.episode_id for row in overview.due] == [due_id]
+    assert [row.episode_id for row in overview.upcoming] == [upcoming_id]
+    assert overview.adherence[0].to_date == date(2026, 5, 26)
+    assert overview.adherence[0].habit_chain[-1].status == "due"
+
+
+def test_dashboard_phase_one_projection_uses_canonical_cutoff_for_due_and_location(monkeypatch):
+    import app.dashboard.read_model as read_model
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    now = datetime(2026, 4, 6, 12, tzinfo=timezone.utc)
+    episode_id = _create_phase_one_episode(location_code="canonical_cutoff", location_name="Canonical cutoff")
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        overview = read_model.build_dashboard_overview(db, account)
+    finally:
+        db.close()
+
+    due = next(row for row in overview.due if row.episode_id == episode_id)
+    location = next(row for row in overview.active_locations if row.episode_id == episode_id)
+    assert due.due_slot == "evening"
+    assert due.missed_slots_today == ("morning",)
+    assert location.next_due_at == now
+    assert location.next_due_slot == "evening"
+
+
+def test_dashboard_canonical_state_ignores_invalid_application_anchors(monkeypatch):
+    import app.dashboard.read_model as read_model
+    import app.services as services
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    now = datetime(2026, 4, 6, 14, tzinfo=timezone.utc)
+    episode_id = _create_phase_one_episode(location_code="invalid_anchors", location_name="Invalid anchors")
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        pre_phase = log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 4, 6, 5, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "user",
+            "test",
+        )
+        future = log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 4, 6, 15, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "user",
+            "test",
+        )
+        foreign = log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 4, 6, 9, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "user",
+            "test",
+            phase_number_snapshot=2,
+        )
+        deleted = log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 4, 6, 10, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "user",
+            "test",
+        )
+        voided = log_application(
+            db,
+            account,
+            episode_id,
+            datetime(2026, 4, 6, 11, tzinfo=timezone.utc),
+            "steroid",
+            None,
+            None,
+            None,
+            "user",
+            "test",
+        )
+        services.delete_application(db, account, deleted.id, now, "user", "test")
+        services.void_application(db, account, voided.id, now, "mistake", "user", "test")
+        assert pre_phase.id and future.id and foreign.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        overview = read_model.build_dashboard_overview(db, account)
+    finally:
+        db.close()
+
+    due = next(row for row in overview.due if row.episode_id == episode_id)
+    location = next(row for row in overview.active_locations if row.episode_id == episode_id)
+    assert due.applications_completed_today == 0
+    assert due.missed_slots_today == ("morning",)
+    assert location.last_application_at is None
+    assert location.next_due_at == now
+    assert location.next_due_slot == "evening"
+
+
+def test_dashboard_taper_projection_reanchors_and_rolls_overdue(monkeypatch):
+    import app.dashboard.read_model as read_model
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    episode_id = _create_taper_episode(
+        location_code="rolling_projection",
+        location_name="Rolling projection",
+        healed_at=datetime(2026, 5, 20, 8, tzinfo=timezone.utc),
+    )
+
+    first_now = datetime(2026, 5, 26, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(read_model, "utc_now", lambda: first_now)
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        first = read_model.build_dashboard_overview(db, account)
+    finally:
+        db.close()
+    upcoming = next(row for row in first.upcoming if row.episode_id == episode_id)
+    assert upcoming.next_due_at == datetime(2026, 5, 27, tzinfo=timezone.utc)
+    assert upcoming.last_application_at == datetime(2026, 5, 25, 9, tzinfo=timezone.utc)
+
+    overdue_now = datetime(2026, 5, 29, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(read_model, "utc_now", lambda: overdue_now)
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        overdue = read_model.build_dashboard_overview(db, account)
+    finally:
+        db.close()
+    due = next(row for row in overdue.due if row.episode_id == episode_id)
+    active = next(row for row in overdue.active_locations if row.episode_id == episode_id)
+    assert due.episode_id == episode_id
+    assert active.next_due_at == overdue_now.replace(hour=0)
+    assert active.last_application_at == datetime(2026, 5, 25, 9, tzinfo=timezone.utc)
+
+
+def test_dashboard_missing_detail_uses_phase_history_and_canonical_phase_one_windows(monkeypatch):
+    import app.dashboard.read_model as read_model
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    now = datetime(2026, 4, 26, 13, 30, tzinfo=timezone.utc)
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        subject = create_subject(db, account, "Late canonical start")
+        location = create_location(db, account, "late_canonical_start", "Late canonical start")
+        episode = create_episode(
+            db,
+            account,
+            subject.id,
+            location.id,
+            "v1",
+            datetime(2026, 4, 26, 13, tzinfo=timezone.utc),
+            "user",
+            "test",
+        )
+    finally:
+        db.close()
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        overview = read_model.build_dashboard_overview(
+            db,
+            account,
+            adherence_range="custom",
+            from_date=date(2026, 4, 26),
+            to_date=date(2026, 4, 26),
+        )
+    finally:
+        db.close()
+
+    location_row = next(row for row in overview.active_locations if row.episode_id == episode.id)
+    detail = overview.adherence[0].habit_chain[0].detail
+    assert location_row.next_due_slot == "evening"
+    assert location_row.next_due_at == datetime(2026, 4, 26, 13, tzinfo=timezone.utc)
+    assert detail is not None
+    assert [(item.label, item.suggested_at) for item in detail.missing] == [
+        ("Evening", datetime(2026, 4, 26, 16, tzinfo=timezone.utc))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("timezone_name", "phase_started_at", "now", "expected_next_due_at"),
+    (
+        (
+            "Europe/Berlin",
+            datetime(2026, 3, 28, 8, tzinfo=timezone.utc),
+            datetime(2026, 3, 29, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 28, 23, tzinfo=timezone.utc),
+        ),
+        (
+            "Europe/Berlin",
+            datetime(2026, 10, 24, 8, tzinfo=timezone.utc),
+            datetime(2026, 10, 25, 1, 30, tzinfo=timezone.utc),
+            datetime(2026, 10, 24, 22, tzinfo=timezone.utc),
+        ),
+        (
+            "America/Santiago",
+            datetime(2026, 9, 5, 12, tzinfo=timezone.utc),
+            datetime(2026, 9, 6, 4, tzinfo=timezone.utc),
+            datetime(2026, 9, 6, 4, tzinfo=timezone.utc),
+        ),
+    ),
+)
+def test_dashboard_phase_one_projection_uses_canonical_dst_boundaries(
+    monkeypatch,
+    timezone_name,
+    phase_started_at,
+    now,
+    expected_next_due_at,
+):
+    import app.dashboard.read_model as read_model
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", timezone_name)
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        subject = create_subject(db, account, f"DST {timezone_name}")
+        location = create_location(db, account, f"dst_{timezone_name.replace('/', '_').lower()}", f"DST {timezone_name}")
+        episode = create_episode(
+            db,
+            account,
+            subject.id,
+            location.id,
+            "v1",
+            phase_started_at,
+            "user",
+            "test",
+        )
+    finally:
+        db.close()
+    monkeypatch.setattr(read_model, "utc_now", lambda: now)
+
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.username == "admin").one()
+        overview = read_model.build_dashboard_overview(db, account)
+    finally:
+        db.close()
+
+    row = next(row for row in overview.active_locations if row.episode_id == episode.id)
+    assert row.next_due_at == expected_next_due_at
+    assert row.next_due_slot == "morning"
 
 
 def test_upcoming_rows_show_dates_without_times_in_single_user_overview(client, monkeypatch):
@@ -1496,7 +1818,7 @@ def test_dashboard_topbar_is_fixed_and_contains_session_actions(client):
     assert 'class="topbar-shell"' in response.text
     assert 'class="brand-link"' in response.text
     assert "<span>Zema</span>" in response.text
-    assert "<small>v0.6.9</small>" in response.text
+    assert "<small>v0.6.10</small>" in response.text
     assert 'class="topbar-actions"' in response.text
     assert 'href="/dashboard?tab=settings"' in response.text
     assert 'aria-label="Undo last action"' in response.text

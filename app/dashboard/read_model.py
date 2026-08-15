@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 from app.adherence import list_adherence_rows, summarize_adherence
 from app.core.config import settings
 from app.core.time import deployment_tz, local_date, local_midnight, to_local, utc_now
-from app.models import Account, BodyLocation, EczemaEpisode, EpisodePhaseHistory, Subject, TaperProtocolPhase, TreatmentApplication
+from app.models import Account, BodyLocation, EczemaEpisode, EpisodePhaseHistory, Subject, TreatmentApplication
 from app.services import catch_up_episode_phases, due_items, get_last_successful_phase_catch_up, list_episodes
+from app.treatment_protocol import ApplicationInput, CANONICAL_V1, DueState, TreatmentSlot
 
 
 @dataclass(frozen=True)
@@ -120,8 +121,9 @@ class DashboardOverview:
 
 
 def build_dashboard_overview(db: Session, account: Account, *, adherence_range: str = "month", from_date: date | None = None, to_date: date | None = None) -> DashboardOverview:
-    catch_up_episode_phases(db, reason="dashboard-read", account=account)
-    due_raw = due_items(db, account)
+    now = utc_now()
+    catch_up_episode_phases(db, now, reason="dashboard-read", account=account)
+    due_raw = due_items(db, account, now=now)
     due_ids = {item["episode_id"] for item in due_raw}
     subjects = _subjects_by_id(db, account)
     locations = _locations_by_id(db, account)
@@ -129,21 +131,21 @@ def build_dashboard_overview(db: Session, account: Account, *, adherence_range: 
     episode_ids = [episode.id for episode in episodes]
     applications = _applications_by_episode(db, episode_ids)
     phase_changes = _last_phase_changes_by_episode(db, episode_ids)
-    selected_adherence_range = _resolve_adherence_range(db, account, adherence_range, from_date, to_date)
+    selected_adherence_range = _resolve_adherence_range(db, account, adherence_range, from_date, to_date, now)
     location_adherence = {
-        location_id: _location_adherence_summaries(db, account, location_id)
+        location_id: _location_adherence_summaries(db, account, location_id, now)
         for location_id in {episode.location_id for episode in episodes}
     }
 
     due = [_row_from_due_item(item, episodes, subjects, locations, phase_changes, location_adherence) for item in due_raw]
     upcoming = [
-        _row_from_episode(episode, subjects, locations, applications.get(episode.id, []), phase_changes, location_adherence)
+        _row_from_episode(episode, subjects, locations, applications.get(episode.id, []), phase_changes, location_adherence, now)
         for episode in episodes
         if episode.id not in due_ids
     ]
     upcoming = sorted(upcoming, key=lambda row: (row.next_due_at is None, row.next_due_at or datetime.max.replace(tzinfo=timezone.utc), row.location_name))
     active_locations = sorted(
-        [_row_from_episode(episode, subjects, locations, applications.get(episode.id, []), phase_changes, location_adherence) for episode in episodes],
+        [_row_from_episode(episode, subjects, locations, applications.get(episode.id, []), phase_changes, location_adherence, now) for episode in episodes],
         key=lambda row: row.location_name,
     )
     return DashboardOverview(
@@ -152,10 +154,10 @@ def build_dashboard_overview(db: Session, account: Account, *, adherence_range: 
         active_locations=active_locations,
         subjects=sorted(subjects.values(), key=lambda subject: subject.display_name),
         locations=sorted((_dashboard_location(location) for location in locations.values()), key=lambda location: location.display_name),
-        adherence=_adherence_summaries(db, account, selected_adherence_range),
+        adherence=_adherence_summaries(db, account, selected_adherence_range, now),
         adherence_range=selected_adherence_range,
         phase_catch_up=get_last_successful_phase_catch_up(),
-        generated_at=utc_now(),
+        generated_at=now,
     )
 
 
@@ -233,7 +235,7 @@ def _row_from_due_item(
         last_application_at=last_application_at,
         due_slot=due_slot,
         next_due_slot=due_slot if is_phase_one else None,
-        last_application_slot=_phase_one_slot_for_datetime(last_application_at) if is_phase_one else None,
+        last_application_slot=_phase_one_slot_for_datetime(last_application_at, episode.phase_started_at) if is_phase_one else None,
         missed_slots_today=tuple(item.get("missed_slots_today") or []),
         applications_completed_today=item.get("applications_completed_today") or 0,
         applications_expected_today=item.get("applications_expected_today") or 0,
@@ -251,10 +253,16 @@ def _row_from_episode(
     applications: list[TreatmentApplication],
     phase_changes: dict[int, datetime],
     location_adherence: dict[int, tuple[DashboardAdherence, ...]],
+    now: datetime,
 ) -> DashboardEpisodeRow:
     location = locations[episode.location_id]
-    last_application_at = applications[-1].applied_at if applications else None
-    next_due_at = _next_due_at(episode, applications)
+    state = _due_state_for_episode(episode, applications, now)
+    last_application_at = (
+        state.last_application_at.astimezone(timezone.utc)
+        if state.last_application_at is not None
+        else None
+    )
+    next_due_at = state.next_due_at.astimezone(timezone.utc)
     is_phase_one = episode.current_phase_number == 1
     return DashboardEpisodeRow(
         episode_id=episode.id,
@@ -266,8 +274,8 @@ def _row_from_episode(
         status=episode.status,
         next_due_at=next_due_at,
         last_application_at=last_application_at,
-        next_due_slot=_phase_one_slot_for_datetime(next_due_at) if is_phase_one else None,
-        last_application_slot=_phase_one_slot_for_datetime(last_application_at) if is_phase_one else None,
+        next_due_slot=_phase_one_slot_for_datetime(next_due_at, episode.phase_started_at) if is_phase_one else None,
+        last_application_slot=_phase_one_slot_for_datetime(last_application_at, episode.phase_started_at) if is_phase_one else None,
         image_url=_image_url(location),
         last_phase_change_at=phase_changes.get(episode.id),
         next_phase_change_at=episode.phase_due_end_at,
@@ -275,61 +283,38 @@ def _row_from_episode(
     )
 
 
-def _next_due_at(episode: EczemaEpisode, applications: list[TreatmentApplication]) -> datetime | None:
-    now = utc_now()
-    if episode.current_phase_number == 1:
-        return _next_phase_one_due_at(episode, applications, now)
-    phase = _phase_for_number(episode.current_phase_number)
-    if phase is None:
-        return None
-    anchor = applications[-1].applied_at if applications else episode.phase_started_at
-    next_due_date = local_date(anchor) + timedelta(days=phase.apply_every_n_days)
-    today = local_date(now)
-    if next_due_date < today:
-        next_due_date = today
-    return local_midnight(next_due_date)
+def _due_state_for_episode(
+    episode: EczemaEpisode,
+    applications: list[TreatmentApplication],
+    now: datetime,
+) -> DueState:
+    protocol_applications = tuple(
+        ApplicationInput(
+            applied_at=to_local(application.applied_at),
+            phase_number_snapshot=application.phase_number_snapshot,
+            is_deleted=application.is_deleted,
+            is_voided=application.is_voided,
+        )
+        for application in applications
+    )
+    return CANONICAL_V1.due_state(
+        phase_number=episode.current_phase_number,
+        phase_started_at=to_local(episode.phase_started_at),
+        applications=protocol_applications,
+        now=to_local(now),
+        timezone=deployment_tz(),
+    )
 
 
-def _next_phase_one_due_at(episode: EczemaEpisode, applications: list[TreatmentApplication], now: datetime) -> datetime | None:
-    local_now = to_local(now)
-    tz = deployment_tz()
-    local_start = to_local(episode.phase_started_at)
-    today = local_now.date()
-    today_start = datetime.combine(today, time.min, tzinfo=tz)
-    cutoff = datetime.combine(today, time(14, 0), tzinfo=tz)
-    tomorrow_start = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
-
-    def satisfies(slot_start: datetime, slot_end: datetime) -> bool:
-        return any(slot_start <= to_local(application.applied_at) < slot_end for application in applications)
-
-    morning_start = max(today_start, local_start)
-    evening_start = max(cutoff, local_start)
-    morning_due = morning_start < cutoff and not satisfies(morning_start, cutoff)
-    evening_due = evening_start < tomorrow_start and not satisfies(evening_start, tomorrow_start)
-    if morning_due:
-        return local_midnight(today)
-    if evening_due:
-        return cutoff.astimezone(timezone.utc)
-    return local_midnight(today + timedelta(days=1))
-
-
-def _phase_one_slot_for_datetime(value: datetime | None) -> str | None:
+def _phase_one_slot_for_datetime(value: datetime | None, phase_started_at: datetime) -> str | None:
     if value is None:
         return None
-    return "morning" if to_local(value).time() < time(14, 0) else "evening"
-
-
-def _phase_for_number(phase_number: int) -> TaperProtocolPhase | None:
-    values = {
-        1: TaperProtocolPhase(phase_number=1, duration_days=None, apply_every_n_days=1, applications_per_day=2),
-        2: TaperProtocolPhase(phase_number=2, duration_days=28, apply_every_n_days=2, applications_per_day=1),
-        3: TaperProtocolPhase(phase_number=3, duration_days=14, apply_every_n_days=3, applications_per_day=1),
-        4: TaperProtocolPhase(phase_number=4, duration_days=14, apply_every_n_days=4, applications_per_day=1),
-        5: TaperProtocolPhase(phase_number=5, duration_days=14, apply_every_n_days=5, applications_per_day=1),
-        6: TaperProtocolPhase(phase_number=6, duration_days=14, apply_every_n_days=6, applications_per_day=1),
-        7: TaperProtocolPhase(phase_number=7, duration_days=14, apply_every_n_days=7, applications_per_day=1),
-    }
-    return values.get(phase_number)
+    slot = CANONICAL_V1.classify_slot(
+        to_local(value),
+        to_local(phase_started_at),
+        timezone=deployment_tz(),
+    )
+    return slot.value if slot is not None else None
 
 
 def _dashboard_location(location: BodyLocation) -> DashboardLocation:
@@ -359,14 +344,15 @@ def _resolve_adherence_range(
     range_key: str,
     custom_from: date | None,
     custom_to: date | None,
+    now: datetime,
 ) -> DashboardAdherenceRange:
-    today = local_date(utc_now())
+    today = local_date(now)
     if range_key == "week":
         return DashboardAdherenceRange("week", "Last week", today - timedelta(days=6), today)
     if range_key == "year":
         return DashboardAdherenceRange("year", "Last year", today - timedelta(days=364), today)
     if range_key == "all":
-        earliest = _earliest_episode_date(db, account) or today
+        earliest = min(_earliest_episode_date(db, account) or today, today)
         return DashboardAdherenceRange("all", "All time", earliest, today)
     if range_key == "custom" and custom_from is not None and custom_to is not None and custom_from <= custom_to:
         return DashboardAdherenceRange("custom", "Custom range", custom_from, custom_to)
@@ -378,12 +364,17 @@ def _earliest_episode_date(db: Session, account: Account) -> date | None:
     return min(values) if values else None
 
 
-def _adherence_summaries(db: Session, account: Account, selected_range: DashboardAdherenceRange) -> list[DashboardAdherence]:
-    today = local_date(utc_now())
+def _adherence_summaries(
+    db: Session,
+    account: Account,
+    selected_range: DashboardAdherenceRange,
+    now: datetime,
+) -> list[DashboardAdherence]:
+    today = local_date(now)
     usage_start = _earliest_episode_date(db, account)
-    rows = list_adherence_rows(db, account, selected_range.from_date, selected_range.to_date, persisted=False)
+    rows = list_adherence_rows(db, account, selected_range.from_date, selected_range.to_date, persisted=False, now=now)
     summary = summarize_adherence(rows)
-    details = _adherence_day_details(db, account, rows, selected_range.from_date, selected_range.to_date, today)
+    details = _adherence_day_details(db, account, rows, selected_range.from_date, selected_range.to_date, today, now)
     return [
         DashboardAdherence(
             label=selected_range.label,
@@ -400,17 +391,25 @@ def _adherence_summaries(db: Session, account: Account, selected_range: Dashboar
     ]
 
 
-def _location_adherence_summaries(db: Session, account: Account, location_id: int) -> tuple[DashboardAdherence, ...]:
-    today = local_date(utc_now())
+def _location_adherence_summaries(
+    db: Session,
+    account: Account,
+    location_id: int,
+    now: datetime,
+) -> tuple[DashboardAdherence, ...]:
+    today = local_date(now)
     usage_start = _earliest_location_episode_date(db, account, location_id)
-    all_start = usage_start or today
+    all_start = min(usage_start or today, today)
     ranges = (
         DashboardAdherenceRange("week", "Week", today - timedelta(days=6), today),
         DashboardAdherenceRange("month", "Month", today - timedelta(days=29), today),
         DashboardAdherenceRange("year", "Year", today - timedelta(days=364), today),
         DashboardAdherenceRange("all", "All time", all_start, today),
     )
-    return tuple(_location_adherence_summary(db, account, location_id, selected_range, today, usage_start) for selected_range in ranges)
+    return tuple(
+        _location_adherence_summary(db, account, location_id, selected_range, today, usage_start, now)
+        for selected_range in ranges
+    )
 
 
 def _location_adherence_summary(
@@ -420,10 +419,19 @@ def _location_adherence_summary(
     selected_range: DashboardAdherenceRange,
     today: date,
     usage_start: date | None,
+    now: datetime,
 ) -> DashboardAdherence:
-    rows = list_adherence_rows(db, account, selected_range.from_date, selected_range.to_date, location_id=location_id, persisted=False)
+    rows = list_adherence_rows(
+        db,
+        account,
+        selected_range.from_date,
+        selected_range.to_date,
+        location_id=location_id,
+        persisted=False,
+        now=now,
+    )
     summary = summarize_adherence(rows)
-    details = _adherence_day_details(db, account, rows, selected_range.from_date, selected_range.to_date, today)
+    details = _adherence_day_details(db, account, rows, selected_range.from_date, selected_range.to_date, today, now)
     return DashboardAdherence(
         label=selected_range.label,
         from_date=selected_range.from_date,
@@ -499,6 +507,7 @@ def _adherence_day_details(
     from_date: date,
     to_date: date,
     today: date,
+    now: datetime,
 ) -> dict[date, DashboardAdherenceDayDetail]:
     row_list = list(rows)
     episode_ids = sorted({row.episode_id for row in row_list})
@@ -507,6 +516,7 @@ def _adherence_day_details(
     episodes = {episode.id: episode for episode in list_episodes(db, account) if episode.id in episode_ids}
     locations = _locations_by_id(db, account)
     applications = _applications_by_episode_date(db, episode_ids, from_date, to_date)
+    phase_histories = _phase_histories_by_episode(db, episode_ids)
 
     details: dict[date, DashboardAdherenceDayDetail] = {}
     for date_value in _iter_dates(from_date, to_date):
@@ -520,6 +530,8 @@ def _adherence_day_details(
                 continue
             location_name = location.display_name
             day_applications = applications.get((row.episode_id, date_value), ())
+            history = _phase_history_for_row(phase_histories.get(row.episode_id, ()), row.phase_number, date_value)
+            canonical_day_applications = _canonical_dashboard_applications(day_applications, history, row.phase_number, now)
             logged.extend(
                 DashboardAdherenceLoggedItem(
                     location_name=location_name,
@@ -533,13 +545,86 @@ def _adherence_day_details(
             missing_count = max(row.expected_applications - row.credited_applications, 0)
             if missing_count <= 0:
                 continue
-            missing.extend(_missing_items_for_row(row, location_name, missing_count, day_applications))
+            missing.extend(_missing_items_for_row(row, location_name, missing_count, history, canonical_day_applications))
         details[date_value] = DashboardAdherenceDayDetail(
             date=date_value,
             logged=tuple(sorted(logged, key=lambda item: (item.location_name, item.logged_at))),
             missing=tuple(sorted(missing, key=lambda item: (item.location_name, item.suggested_at))),
         )
     return details
+
+
+def _phase_histories_by_episode(
+    db: Session,
+    episode_ids: list[int],
+) -> dict[int, tuple[EpisodePhaseHistory, ...]]:
+    if not episode_ids:
+        return {}
+    rows = list(
+        db.execute(
+            select(EpisodePhaseHistory)
+            .where(EpisodePhaseHistory.episode_id.in_(episode_ids))
+            .order_by(EpisodePhaseHistory.episode_id.asc(), EpisodePhaseHistory.started_at.asc(), EpisodePhaseHistory.id.asc())
+        ).scalars()
+    )
+    grouped: dict[int, list[EpisodePhaseHistory]] = {}
+    for row in rows:
+        grouped.setdefault(row.episode_id, []).append(row)
+    return {episode_id: tuple(values) for episode_id, values in grouped.items()}
+
+
+def _phase_history_for_row(
+    histories: tuple[EpisodePhaseHistory, ...],
+    phase_number: int,
+    date_value: date,
+) -> EpisodePhaseHistory | None:
+    day_start = local_midnight(date_value)
+    day_end = local_midnight(date_value + timedelta(days=1))
+    candidates = [
+        history
+        for history in histories
+        if history.phase_number == phase_number
+        and to_local(history.started_at).astimezone(timezone.utc) < day_end
+        and (
+            history.ended_at is None
+            or to_local(history.ended_at).astimezone(timezone.utc) > day_start
+        )
+    ]
+    return max(candidates, key=lambda history: (history.started_at, history.id), default=None)
+
+
+def _canonical_dashboard_applications(
+    applications: tuple[TreatmentApplication, ...],
+    history: EpisodePhaseHistory | None,
+    phase_number: int,
+    now: datetime,
+) -> tuple[ApplicationInput, ...]:
+    if history is None:
+        return ()
+    phase_started_at = to_local(history.started_at)
+    valid = CANONICAL_V1.valid_applications(
+        (_application_input(application) for application in applications),
+        phase_number=phase_number,
+        phase_started_at=phase_started_at,
+        through=to_local(now),
+    )
+    if history.ended_at is None:
+        return valid
+    phase_end_instant = to_local(history.ended_at).astimezone(timezone.utc)
+    return tuple(
+        application
+        for application in valid
+        if application.applied_at.astimezone(timezone.utc) < phase_end_instant
+    )
+
+
+def _application_input(application: TreatmentApplication) -> ApplicationInput:
+    return ApplicationInput(
+        applied_at=to_local(application.applied_at),
+        phase_number_snapshot=application.phase_number_snapshot,
+        is_deleted=application.is_deleted,
+        is_voided=application.is_voided,
+    )
 
 
 def _applications_by_episode_date(
@@ -571,9 +656,15 @@ def _applications_by_episode_date(
     return {key: tuple(value) for key, value in grouped.items()}
 
 
-def _missing_items_for_row(row, location_name: str, missing_count: int, applications: tuple[TreatmentApplication, ...]) -> tuple[DashboardAdherenceMissingItem, ...]:
+def _missing_items_for_row(
+    row,
+    location_name: str,
+    missing_count: int,
+    history: EpisodePhaseHistory | None,
+    applications: tuple[ApplicationInput, ...],
+) -> tuple[DashboardAdherenceMissingItem, ...]:
     if row.phase_number == 1:
-        labels_and_times = _missing_phase_one_slots(row.date, row.expected_applications, applications)
+        labels_and_times = _missing_phase_one_slots(row.date, history, applications)
     else:
         labels_and_times = [("Treatment", _local_datetime(row.date, time(12, 0)))]
     return tuple(
@@ -588,19 +679,40 @@ def _missing_items_for_row(row, location_name: str, missing_count: int, applicat
     )
 
 
-def _missing_phase_one_slots(date_value: date, expected_applications: int, applications: tuple[TreatmentApplication, ...]) -> list[tuple[str, datetime]]:
-    morning_start = _local_datetime(date_value, time(8, 0))
-    cutoff = _local_datetime(date_value, time(14, 0))
-    evening_start = _local_datetime(date_value, time(18, 0))
-    has_morning = any(to_local(application.applied_at) < to_local(cutoff) for application in applications if application.phase_number_snapshot in {None, 1})
-    has_evening = any(to_local(application.applied_at) >= to_local(cutoff) for application in applications if application.phase_number_snapshot in {None, 1})
+def _missing_phase_one_slots(
+    date_value: date,
+    history: EpisodePhaseHistory | None,
+    applications: tuple[ApplicationInput, ...],
+) -> list[tuple[str, datetime]]:
+    if history is None:
+        return []
+    phase_started_at = to_local(history.started_at)
+    expectation = CANONICAL_V1.daily_expectation(
+        phase_started_at,
+        date_value,
+        timezone=deployment_tz(),
+    )
+    if history.ended_at is not None:
+        phase_end_instant = to_local(history.ended_at).astimezone(timezone.utc)
+        windows = tuple(
+            window
+            for window in expectation.windows
+            if window.start.astimezone(timezone.utc) < phase_end_instant
+        )
+    else:
+        windows = expectation.windows
     missing: list[tuple[str, datetime]] = []
-    if expected_applications == 1 and not has_morning and not has_evening:
-        return [("Evening", evening_start)]
-    if not has_morning:
-        missing.append(("Morning", morning_start))
-    if not has_evening:
-        missing.append(("Evening", evening_start))
+    for window in windows:
+        satisfied = any(
+            window.start.astimezone(timezone.utc)
+            <= application.applied_at.astimezone(timezone.utc)
+            < window.end.astimezone(timezone.utc)
+            for application in applications
+        )
+        if satisfied:
+            continue
+        suggestion_time = time(8, 0) if window.slot == TreatmentSlot.MORNING else time(18, 0)
+        missing.append((window.slot.value.title(), _local_datetime(date_value, suggestion_time)))
     return missing
 
 

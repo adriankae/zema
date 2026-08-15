@@ -106,12 +106,15 @@ def _valid_phase_applications(
     applications: list[TreatmentApplication],
     history: EpisodePhaseHistory,
     phase_number: int,
+    *,
+    through: datetime | None = None,
 ) -> tuple[ApplicationInput, ...]:
     phase_started_at = to_local(history.started_at)
     valid = CANONICAL_V1.valid_applications(
         (_application_input(application) for application in applications),
         phase_number=phase_number,
         phase_started_at=phase_started_at,
+        through=through,
     )
     if history.ended_at is None:
         return valid
@@ -174,6 +177,7 @@ def calculate_episode_adherence(
     episode_id: int,
     from_date: date,
     to_date: date,
+    now: datetime | None = None,
 ) -> list[CalculatedAdherenceDay]:
     _validate_date_range(from_date, to_date)
     episode = get_episode(db, account, episode_id)
@@ -189,8 +193,14 @@ def calculate_episode_adherence(
 
     applications = _applications_for_episode(db, episode.id)
     timezone = deployment_tz()
-    today = local_date(utc_now())
-    calculated_at = utc_now()
+    if now is None:
+        today = local_date(utc_now())
+        calculated_at = utc_now()
+        calculation_now = None
+    else:
+        calculation_now = _instant(now)
+        today = local_date(calculation_now)
+        calculated_at = calculation_now
     rows: list[CalculatedAdherenceDay] = []
 
     for history in histories:
@@ -208,7 +218,12 @@ def calculate_episode_adherence(
         if range_start > range_end:
             continue
 
-        phase_applications = _valid_phase_applications(applications, history, phase.phase_number)
+        phase_applications = _valid_phase_applications(
+            applications,
+            history,
+            phase.phase_number,
+            through=calculation_now,
+        )
         applications_by_date = _applications_by_local_date(phase_applications, timezone)
 
         if phase.phase_number == 1:
@@ -277,6 +292,7 @@ def calculate_filtered_adherence(
     episode_id: int | None = None,
     subject_id: int | None = None,
     location_id: int | None = None,
+    now: datetime | None = None,
 ) -> list[CalculatedAdherenceDay]:
     _validate_date_range(from_date, to_date)
     if episode_id is not None:
@@ -285,7 +301,7 @@ def calculate_filtered_adherence(
             return []
         if location_id is not None and episode.location_id != location_id:
             return []
-        return calculate_episode_adherence(db, account, episode.id, from_date, to_date)
+        return calculate_episode_adherence(db, account, episode.id, from_date, to_date, now=now)
 
     rows: list[CalculatedAdherenceDay] = []
     for episode in list_episodes(db, account):
@@ -293,7 +309,7 @@ def calculate_filtered_adherence(
             continue
         if location_id is not None and episode.location_id != location_id:
             continue
-        rows.extend(calculate_episode_adherence(db, account, episode.id, from_date, to_date))
+        rows.extend(calculate_episode_adherence(db, account, episode.id, from_date, to_date, now=now))
     return sorted(rows, key=lambda row: (row.date, row.episode_id))
 
 
@@ -333,6 +349,7 @@ def list_adherence_rows(
     subject_id: int | None = None,
     location_id: int | None = None,
     persisted: bool = False,
+    now: datetime | None = None,
 ) -> list[CalculatedAdherenceDay | EpisodeDailyAdherence]:
     if persisted:
         return list_persisted_adherence_rows(
@@ -352,6 +369,7 @@ def list_adherence_rows(
         episode_id=episode_id,
         subject_id=subject_id,
         location_id=location_id,
+        now=now,
     )
 
 

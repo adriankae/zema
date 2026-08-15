@@ -922,7 +922,12 @@ def _due_next_due_at(state, deployment_timezone) -> datetime:
     return next_due_at.astimezone(timezone.utc)
 
 
-def due_items(db: Session, account: Account, subject_id: int | None = None) -> list[dict]:
+def due_items(
+    db: Session,
+    account: Account,
+    subject_id: int | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
     episodes = list_episodes(db, account, subject_id=subject_id)
     episode_ids = [episode.id for episode in episodes if episode.status != "obsolete"]
     applications_by_episode: dict[int, list[TreatmentApplication]] = {episode_id: [] for episode_id in episode_ids}
@@ -940,7 +945,7 @@ def due_items(db: Session, account: Account, subject_id: int | None = None) -> l
             applications_by_episode.setdefault(application.episode_id, []).append(application)
     items: list[dict] = []
     deployment_timezone = deployment_tz()
-    now = to_local(utc_now())
+    now = to_local(now or utc_now())
     for episode in episodes:
         if episode.status == "obsolete":
             continue

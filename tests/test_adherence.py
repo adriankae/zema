@@ -219,6 +219,31 @@ def test_phase_one_start_after_cutoff_expects_evening_slot_only(monkeypatch):
         db.close()
 
 
+def test_calculate_episode_adherence_accepts_explicit_now_without_reading_clock(monkeypatch):
+    import app.adherence as adherence
+
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 4, 6, 8, tzinfo=timezone.utc))
+        explicit_now = datetime(2026, 4, 6, 12, tzinfo=timezone.utc)
+        monkeypatch.setattr(adherence, "utc_now", lambda: (_ for _ in ()).throw(AssertionError("unexpected adherence clock read")))
+
+        rows = calculate_episode_adherence(
+            db,
+            account,
+            episode.id,
+            date(2026, 4, 6),
+            date(2026, 4, 6),
+            now=explicit_now,
+        )
+
+        assert rows[0].status == "missed"
+        assert rows[0].calculated_at == explicit_now
+    finally:
+        db.close()
+
+
 def test_phase_one_start_after_cutoff_evening_application_completes_day(monkeypatch):
     import app.adherence as adherence
     from app.core.config import settings

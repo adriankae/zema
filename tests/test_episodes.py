@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+
+
+def _as_utc(value):
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _create_subject_location(client, headers):
@@ -59,10 +66,97 @@ def test_episode_lifecycle(client, auth_headers):
     assert healed_again["healed_at"] is not None
 
 
+def test_calculate_phase_due_end_uses_canonical_progression_public_seam(monkeypatch):
+    import app.services as services
+    from app.core.config import settings
+    from app.treatment_protocol import CANONICAL_V1
+
+    berlin = ZoneInfo("Europe/Berlin")
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    calls = []
+    original_progression = CANONICAL_V1.phase_progression
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return original_progression(**kwargs)
+
+    monkeypatch.setattr(CANONICAL_V1, "phase_progression", spy)
+
+    phase_started_at = datetime(2026, 3, 1, 2, 30, tzinfo=berlin)
+    due_end_at = services.calculate_phase_due_end_at(phase_started_at, 2)
+
+    assert due_end_at == datetime(2026, 3, 29, 1, 30, tzinfo=timezone.utc)
+    assert due_end_at.astimezone(berlin) == datetime(2026, 3, 29, 3, 30, tzinfo=berlin)
+    assert len(calls) == 1
+    assert calls[0]["phase_number"] == 2
+    assert calls[0]["phase_started_at"] == phase_started_at
+    assert calls[0]["now"] == phase_started_at
+    assert calls[0]["timezone"] == berlin
+
+
+def test_calculate_phase_due_end_matches_canonical_v1_for_every_phase(monkeypatch):
+    import app.services as services
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    phase_started_at = datetime(2026, 1, 1, 18, tzinfo=timezone.utc)
+    expected_due_ends = {
+        1: None,
+        2: datetime(2026, 1, 29, 18, tzinfo=timezone.utc),
+        3: datetime(2026, 1, 15, 18, tzinfo=timezone.utc),
+        4: datetime(2026, 1, 15, 18, tzinfo=timezone.utc),
+        5: datetime(2026, 1, 15, 18, tzinfo=timezone.utc),
+        6: datetime(2026, 1, 15, 18, tzinfo=timezone.utc),
+        7: datetime(2026, 1, 15, 18, tzinfo=timezone.utc),
+        8: None,
+    }
+
+    for phase_number, expected_due_end_at in expected_due_ends.items():
+        assert services.calculate_phase_due_end_at(phase_started_at, phase_number) == expected_due_end_at
+
+
+def test_advance_episode_uses_canonical_local_date_trigger(client, auth_headers, monkeypatch):
+    import app.api as api
+    from app.core.config import settings
+    from app.treatment_protocol import CANONICAL_V1
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    episode = _create_taper_episode(client, auth_headers, location_code="canonical_advance", healed_at="2026-01-01T18:00:00Z")
+    phase_started_at = datetime(2026, 1, 1, 18, tzinfo=timezone.utc)
+    before_local_trigger = datetime(2026, 1, 28, 23, 59, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: before_local_trigger)
+
+    before = client.post(f"/episodes/{episode['id']}/advance", headers=auth_headers)
+    assert before.status_code == 409
+
+    calls = []
+    original_progression = CANONICAL_V1.phase_progression
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return original_progression(**kwargs)
+
+    monkeypatch.setattr(CANONICAL_V1, "phase_progression", spy)
+    exact_local_trigger = datetime(2026, 1, 29, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: exact_local_trigger)
+
+    on_trigger = client.post(f"/episodes/{episode['id']}/advance", headers=auth_headers)
+
+    assert on_trigger.status_code == 200
+    assert on_trigger.json()["episode"]["current_phase_number"] == 3
+    assert any(
+        call["phase_number"] == 2
+        and call["phase_started_at"] == phase_started_at
+        and call["now"] == exact_local_trigger
+        and call["timezone"] == ZoneInfo("UTC")
+        for call in calls
+    )
+
+
 def test_auto_advance_and_obsolete(client, auth_headers):
     subject_id, location_id = _create_subject_location(client, auth_headers)
     episode = client.post("/episodes", headers=auth_headers, json={"subject_id": subject_id, "location_id": location_id}).json()["episode"]
-    client.post(f"/episodes/{episode['id']}/heal", headers=auth_headers, json={"healed_at": "2026-01-01T00:00:00Z"})
+    client.post(f"/episodes/{episode['id']}/heal", headers=auth_headers, json={"healed_at": "2025-12-05T00:00:00Z"})
 
     from app.core.database import SessionLocal
     from app.core.time import utc_now
@@ -72,7 +166,7 @@ def test_auto_advance_and_obsolete(client, auth_headers):
     db = SessionLocal()
     try:
         ep = db.get(EczemaEpisode, episode["id"])
-        ep.phase_started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ep.phase_started_at = datetime(2025, 12, 5, tzinfo=timezone.utc)
         ep.phase_due_end_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
         db.commit()
         auto_advance_due_episodes(db, datetime(2026, 3, 15, tzinfo=timezone.utc))
@@ -367,6 +461,161 @@ def test_due_read_catches_up_missed_taper_phase(client, auth_headers, monkeypatc
         db.close()
 
 
+def test_phase_catch_up_uses_one_canonical_decision_for_all_due_transitions(client, auth_headers, monkeypatch):
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.models import EczemaEpisode, EpisodeEvent, EpisodePhaseHistory
+    from app.services import catch_up_episode_phases
+    from app.treatment_protocol import CANONICAL_V1
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    episode = _create_taper_episode(client, auth_headers, location_code="canonical_catchup", healed_at="2026-01-01T18:00:00Z")
+    run_at = datetime(2026, 4, 10, 12, tzinfo=timezone.utc)
+    calls = []
+    original_progression = CANONICAL_V1.phase_progression
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return original_progression(**kwargs)
+
+    monkeypatch.setattr(CANONICAL_V1, "phase_progression", spy)
+    db = SessionLocal()
+    try:
+        result = catch_up_episode_phases(db, run_at, reason="startup")
+
+        assert result.transition_count == 6
+        assert result.transitions[0].transition_count == 6
+        assert result.transitions[0].resulting_phase == 7
+        assert result.transitions[0].status == "obsolete"
+        decision_calls = [call for call in calls if call["now"] == run_at]
+        assert len(decision_calls) == 1
+        assert decision_calls[0]["phase_number"] == 2
+        assert decision_calls[0]["timezone"] == ZoneInfo("UTC")
+        stored = db.get(EczemaEpisode, episode["id"])
+        assert stored.status == "obsolete"
+        assert stored.current_phase_number == 7
+        assert _as_utc(stored.obsolete_at) == datetime(2026, 4, 9, 18, tzinfo=timezone.utc)
+
+        histories = list(
+            db.execute(
+                select(EpisodePhaseHistory)
+                .where(EpisodePhaseHistory.episode_id == episode["id"])
+                .order_by(EpisodePhaseHistory.id.asc())
+            ).scalars()
+        )
+        assert [history.phase_number for history in histories] == [1, 2, 3, 4, 5, 6, 7]
+        assert [history.reason for history in histories] == [
+            "episode_created",
+            "healed_marked",
+            "auto_advance",
+            "auto_advance",
+            "auto_advance",
+            "auto_advance",
+            "auto_advance",
+        ]
+        phase_starts = [
+            datetime(2026, 1, 1, 18, tzinfo=timezone.utc),
+            datetime(2026, 1, 29, 18, tzinfo=timezone.utc),
+            datetime(2026, 2, 12, 18, tzinfo=timezone.utc),
+            datetime(2026, 2, 26, 18, tzinfo=timezone.utc),
+            datetime(2026, 3, 12, 18, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 18, tzinfo=timezone.utc),
+        ]
+        assert [_as_utc(history.started_at) for history in histories[1:]] == phase_starts
+        assert [_as_utc(history.ended_at) for history in histories[1:]] == [
+            datetime(2026, 1, 29, 18, tzinfo=timezone.utc),
+            datetime(2026, 2, 12, 18, tzinfo=timezone.utc),
+            datetime(2026, 2, 26, 18, tzinfo=timezone.utc),
+            datetime(2026, 3, 12, 18, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 18, tzinfo=timezone.utc),
+            datetime(2026, 4, 9, 18, tzinfo=timezone.utc),
+        ]
+
+        events = list(
+            db.execute(
+                select(EpisodeEvent)
+                .where(EpisodeEvent.episode_id == episode["id"])
+                .order_by(EpisodeEvent.id.asc())
+            ).scalars()
+        )
+        assert [event.event_type for event in events] == [
+            "episode_created",
+            "healed_marked",
+            "phase_entered",
+            "phase_entered",
+            "phase_entered",
+            "phase_entered",
+            "phase_entered",
+            "phase_entered",
+            "episode_obsoleted",
+        ]
+        phase_events = [event for event in events if event.event_type == "phase_entered"]
+        assert [
+            (
+                event.payload["from_phase_number"],
+                event.payload["to_phase_number"],
+                event.payload["reason"],
+            )
+            for event in phase_events
+        ] == [
+            (1, 2, "healed_marked"),
+            (2, 3, "auto_advance"),
+            (3, 4, "auto_advance"),
+            (4, 5, "auto_advance"),
+            (5, 6, "auto_advance"),
+            (6, 7, "auto_advance"),
+        ]
+        assert [event.actor_type for event in phase_events] == ["user", "system", "system", "system", "system", "system"]
+        assert [event.actor_id for event in phase_events[1:]] == ["system:phase-advance"] * 5
+        # Heal retains aware API-input serialization; auto-transition starts are SQLite-reloaded naive timestamps.
+        assert [event.payload["started_at"] for event in phase_events] == [
+            "2026-01-01T18:00:00+00:00",
+            "2026-01-29T18:00:00",
+            "2026-02-12T18:00:00",
+            "2026-02-26T18:00:00",
+            "2026-03-12T18:00:00",
+            "2026-03-26T18:00:00",
+        ]
+        # Newly calculated due-end values are serialized from aware UTC datetimes.
+        assert [event.payload["due_end_at"] for event in phase_events] == [
+            "2026-01-29T18:00:00+00:00",
+            "2026-02-12T18:00:00+00:00",
+            "2026-02-26T18:00:00+00:00",
+            "2026-03-12T18:00:00+00:00",
+            "2026-03-26T18:00:00+00:00",
+            "2026-04-09T18:00:00+00:00",
+        ]
+        assert [_as_utc(event.occurred_at) for event in phase_events] == [
+            datetime(2026, 1, 1, 18, tzinfo=timezone.utc),
+            datetime(2026, 1, 29, 18, tzinfo=timezone.utc),
+            datetime(2026, 2, 12, 18, tzinfo=timezone.utc),
+            datetime(2026, 2, 26, 18, tzinfo=timezone.utc),
+            datetime(2026, 3, 12, 18, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 18, tzinfo=timezone.utc),
+        ]
+        obsoleted = events[-1]
+        assert obsoleted.event_type == "episode_obsoleted"
+        assert _as_utc(obsoleted.occurred_at) == datetime(2026, 4, 9, 18, tzinfo=timezone.utc)
+        assert obsoleted.actor_type == "system"
+        assert obsoleted.actor_id == "system:phase-advance"
+        assert obsoleted.payload == {
+            "final_phase_number": 7,
+            "obsoleted_at": "2026-04-09T18:00:00",
+            "reason": "protocol_completed",
+        }
+
+        history_count = len(histories)
+        event_count = len(events)
+        repeated = catch_up_episode_phases(db, run_at, reason="startup")
+        assert repeated.changed_count == 0
+        assert repeated.transition_count == 0
+        assert repeated.transitions == []
+        assert len(db.execute(select(EpisodePhaseHistory).where(EpisodePhaseHistory.episode_id == episode["id"])).scalars().all()) == history_count
+        assert len(db.execute(select(EpisodeEvent).where(EpisodeEvent.episode_id == episode["id"])).scalars().all()) == event_count
+    finally:
+        db.close()
+
+
 def test_repeated_phase_catch_up_is_noop(client, auth_headers):
     from app.core.database import SessionLocal
     from app.models import EpisodeEvent, EpisodePhaseHistory
@@ -396,6 +645,76 @@ def test_repeated_phase_catch_up_is_noop(client, auth_headers):
             )
             == len(event_count)
         )
+    finally:
+        db.close()
+
+
+def test_phase_catch_up_missing_due_end_is_a_noop(client, auth_headers, monkeypatch):
+    from app.core.database import SessionLocal
+    from app.models import EczemaEpisode, EpisodeEvent, EpisodePhaseHistory
+    from app.services import catch_up_episode_phases
+    from app.treatment_protocol import CANONICAL_V1
+
+    episode = _create_taper_episode(client, auth_headers, location_code="catchup_missing_due_end", healed_at="2026-01-01T08:00:00Z")
+    run_at = datetime(2026, 2, 1, 8, tzinfo=timezone.utc)
+    calls = []
+    original_progression = CANONICAL_V1.phase_progression
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return original_progression(**kwargs)
+
+    monkeypatch.setattr(CANONICAL_V1, "phase_progression", spy)
+    db = SessionLocal()
+    try:
+        stored = db.get(EczemaEpisode, episode["id"])
+        stored.phase_due_end_at = None
+        db.commit()
+        db.refresh(stored)
+        before_episode = (stored.status, stored.current_phase_number, stored.phase_started_at, stored.phase_due_end_at)
+        before_histories = [
+            (history.phase_number, history.started_at, history.ended_at, history.reason)
+            for history in db.execute(
+                select(EpisodePhaseHistory)
+                .where(EpisodePhaseHistory.episode_id == episode["id"])
+                .order_by(EpisodePhaseHistory.id.asc())
+            ).scalars()
+        ]
+        before_events = [
+            (event.event_type, event.actor_type, event.actor_id, event.occurred_at, event.payload)
+            for event in db.execute(
+                select(EpisodeEvent)
+                .where(EpisodeEvent.episode_id == episode["id"])
+                .order_by(EpisodeEvent.id.asc())
+            ).scalars()
+        ]
+
+        result = catch_up_episode_phases(db, run_at, reason="startup")
+
+        assert result.changed_count == 0
+        assert result.transition_count == 0
+        assert result.transitions == []
+        assert calls == []
+        db.refresh(stored)
+        assert (stored.status, stored.current_phase_number, stored.phase_started_at, stored.phase_due_end_at) == before_episode
+        after_histories = [
+            (history.phase_number, history.started_at, history.ended_at, history.reason)
+            for history in db.execute(
+                select(EpisodePhaseHistory)
+                .where(EpisodePhaseHistory.episode_id == episode["id"])
+                .order_by(EpisodePhaseHistory.id.asc())
+            ).scalars()
+        ]
+        after_events = [
+            (event.event_type, event.actor_type, event.actor_id, event.occurred_at, event.payload)
+            for event in db.execute(
+                select(EpisodeEvent)
+                .where(EpisodeEvent.episode_id == episode["id"])
+                .order_by(EpisodeEvent.id.asc())
+            ).scalars()
+        ]
+        assert after_histories == before_histories
+        assert after_events == before_events
     finally:
         db.close()
 

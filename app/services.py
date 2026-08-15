@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import create_access_token, generate_api_key, hash_api_key, hash_password, verify_password
-from app.core.time import add_calendar_days, deployment_tz, local_date, local_midnight, to_local, utc_now
+from app.core.time import deployment_tz, local_date, local_midnight, to_local, utc_now
 from app.models import (
     Account,
     AccountApiKey,
@@ -25,7 +25,12 @@ from app.models import (
     TaperProtocolPhase,
     TreatmentApplication,
 )
-from app.treatment_protocol import PhaseDefinition, validate_protocol_mirror as validate_canonical_protocol_mirror
+from app.treatment_protocol import (
+    CANONICAL_V1,
+    PhaseDefinition,
+    PhaseProgressionResult,
+    validate_protocol_mirror as validate_canonical_protocol_mirror,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -318,19 +323,28 @@ def get_protocol_phase(db: Session, phase_number: int) -> TaperProtocolPhase:
     return phase
 
 
+def _canonical_phase_progression(
+    phase_number: int,
+    phase_started_at: datetime,
+    now: datetime,
+) -> PhaseProgressionResult:
+    return CANONICAL_V1.phase_progression(
+        phase_number=phase_number,
+        phase_started_at=to_local(phase_started_at),
+        now=to_local(now),
+        timezone=deployment_tz(),
+    )
+
+
 def calculate_phase_due_end_at(phase_started_at: datetime, phase_number: int) -> datetime | None:
-    phase = {
-        1: None,
-        2: 28,
-        3: 14,
-        4: 14,
-        5: 14,
-        6: 14,
-        7: 14,
-    }.get(phase_number)
-    if phase is None:
+    try:
+        phase = CANONICAL_V1.phase(phase_number)
+    except ValueError:
         return None
-    return add_calendar_days(phase_started_at, phase)
+    if phase.duration_days is None:
+        return None
+    progression = _canonical_phase_progression(phase_number, phase_started_at, phase_started_at)
+    return progression.phase_due_end_at.astimezone(timezone.utc) if progression.phase_due_end_at else None
 
 
 def create_phase_history(db: Session, episode: EczemaEpisode, phase_number: int, started_at: datetime, reason: str) -> EpisodePhaseHistory:
@@ -543,14 +557,24 @@ def relapse_episode(db: Session, account: Account, episode_id: int, reported_at:
     return episode
 
 
-def _advance_to_next_phase(db: Session, episode: EczemaEpisode, now: datetime, actor_type: str, actor_id: str) -> EczemaEpisode:
+def _advance_to_next_phase(
+    db: Session,
+    episode: EczemaEpisode,
+    now: datetime,
+    actor_type: str,
+    actor_id: str,
+    *,
+    progression: PhaseProgressionResult | None = None,
+) -> EczemaEpisode:
     if episode.status != "in_taper":
         return episode
     if episode.current_phase_number < 2 or episode.current_phase_number > 7:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="episode not in taper")
     if episode.phase_due_end_at is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="episode cannot be advanced")
-    if local_date(now) < local_date(episode.phase_due_end_at):
+    if progression is None:
+        progression = _canonical_phase_progression(episode.current_phase_number, episode.phase_started_at, now)
+    if progression.transition_count < 1:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="episode cannot be advanced")
 
     previous_phase = episode.current_phase_number
@@ -631,12 +655,21 @@ def catch_up_episode_phases(
         stmt = stmt.where(EczemaEpisode.subject_id == subject_id)
     episodes = list(db.execute(stmt.order_by(EczemaEpisode.id.asc())).scalars())
     for episode in episodes:
-        episode_transition_count = 0
         previous_phase = episode.current_phase_number
         previous_phase_due_end_at = episode.phase_due_end_at
-        while episode.status == "in_taper" and episode.phase_due_end_at is not None and local_date(run_at) >= local_date(episode.phase_due_end_at):
-            _advance_to_next_phase(db, episode, run_at, "system", "system:phase-advance")
-            episode_transition_count += 1
+        if episode.phase_due_end_at is None:
+            continue
+        progression = _canonical_phase_progression(episode.current_phase_number, episode.phase_started_at, run_at)
+        episode_transition_count = progression.transition_count
+        for _ in range(episode_transition_count):
+            _advance_to_next_phase(
+                db,
+                episode,
+                run_at,
+                "system",
+                "system:phase-advance",
+                progression=progression,
+            )
             result.transition_count += 1
             db.refresh(episode)
         if episode_transition_count:

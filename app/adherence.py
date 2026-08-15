@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta, timezone as utc_timezone, tzinfo
 from typing import Iterable
 
 from fastapi import HTTPException, status
@@ -9,8 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.time import deployment_tz, local_date, to_local, utc_now
-from app.models import Account, EpisodeDailyAdherence, EpisodePhaseHistory, TaperProtocolPhase, TreatmentApplication
+from app.models import Account, EpisodeDailyAdherence, EpisodePhaseHistory, TreatmentApplication
 from app.services import get_episode, list_episodes
+from app.treatment_protocol import ApplicationInput, CANONICAL_V1, RollingScheduleStatus
 
 
 ADHERENCE_STATUSES = {"completed", "partial", "missed", "not_due", "future"}
@@ -86,75 +87,85 @@ def _applications_for_episode(db: Session, episode_id: int) -> list[TreatmentApp
     )
 
 
-def _applications_by_local_date(applications: list[TreatmentApplication]) -> dict[date, int]:
-    counts: dict[date, int] = {}
+def _instant(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = to_local(value)
+    return value.astimezone(utc_timezone.utc)
+
+
+def _application_input(application: TreatmentApplication) -> ApplicationInput:
+    return ApplicationInput(
+        applied_at=to_local(application.applied_at),
+        phase_number_snapshot=application.phase_number_snapshot,
+        is_deleted=application.is_deleted,
+        is_voided=application.is_voided,
+    )
+
+
+def _valid_phase_applications(
+    applications: list[TreatmentApplication],
+    history: EpisodePhaseHistory,
+    phase_number: int,
+) -> tuple[ApplicationInput, ...]:
+    phase_started_at = to_local(history.started_at)
+    valid = CANONICAL_V1.valid_applications(
+        (_application_input(application) for application in applications),
+        phase_number=phase_number,
+        phase_started_at=phase_started_at,
+    )
+    if history.ended_at is None:
+        return valid
+
+    phase_ended_at = to_local(history.ended_at)
+    phase_end_instant = _instant(phase_ended_at)
+    return tuple(application for application in valid if _instant(application.applied_at) < phase_end_instant)
+
+
+def _applications_by_local_date(
+    applications: Iterable[ApplicationInput],
+    timezone: tzinfo,
+) -> dict[date, list[ApplicationInput]]:
+    applications_by_date: dict[date, list[ApplicationInput]] = {}
     for application in applications:
-        applied_date = local_date(application.applied_at)
-        counts[applied_date] = counts.get(applied_date, 0) + 1
-    return counts
+        applied_date = application.applied_at.astimezone(timezone).date()
+        applications_by_date.setdefault(applied_date, []).append(application)
+    return applications_by_date
 
 
 def _phase_one_adherence_counts(
-    applications: list[TreatmentApplication],
-    history: EpisodePhaseHistory,
+    applications_by_date: dict[date, list[ApplicationInput]],
+    phase_started_at: datetime,
     date_value: date,
+    timezone: tzinfo,
 ) -> tuple[int, int, int]:
-    tz = deployment_tz()
-    phase_start = to_local(history.started_at)
-    phase_end = to_local(history.ended_at) if history.ended_at is not None else None
-    day_start = datetime.combine(date_value, time.min, tzinfo=tz)
-    cutoff = datetime.combine(date_value, time(14, 0), tzinfo=tz)
-    tomorrow_start = datetime.combine(date_value + timedelta(days=1), time.min, tzinfo=tz)
-    day_end = min(tomorrow_start, phase_end) if phase_end is not None else tomorrow_start
-
-    morning_start = max(day_start, phase_start)
-    morning_end = min(cutoff, day_end)
-    evening_start = max(cutoff, phase_start)
-    evening_end = day_end
-    expected_slots = [
-        (morning_start, morning_end),
-        (evening_start, evening_end),
-    ]
-    expected_slots = [(slot_start, slot_end) for slot_start, slot_end in expected_slots if slot_start < slot_end]
-
-    valid_applications = [
-        application
-        for application in applications
-        if application.phase_number_snapshot in {None, 1}
-        and (applied_at := to_local(application.applied_at)) >= phase_start
-        and applied_at < day_end
-        and day_start <= applied_at < tomorrow_start
-    ]
+    expectation = CANONICAL_V1.daily_expectation(
+        phase_started_at,
+        date_value,
+        timezone=timezone,
+    )
+    valid_applications = applications_by_date.get(date_value, [])
     credited = sum(
         1
-        for slot_start, slot_end in expected_slots
-        if any(slot_start <= to_local(application.applied_at) < slot_end for application in valid_applications)
+        for window in expectation.windows
+        if any(
+            _instant(window.start) <= _instant(application.applied_at) < _instant(window.end)
+            for application in valid_applications
+        )
     )
-    return len(expected_slots), len(valid_applications), credited
+    return expectation.expected_count, len(valid_applications), credited
 
 
-def _adherence_counts_for_date(
-    phase: TaperProtocolPhase,
-    history: EpisodePhaseHistory,
-    applications: list[TreatmentApplication],
-    applications_by_date: dict[date, int],
-    date_value: date,
-) -> tuple[int, int, int]:
-    phase_start_date = local_date(history.started_at)
-    days_since_phase_start = (date_value - phase_start_date).days
-    is_due = days_since_phase_start % phase.apply_every_n_days == 0
-    if not is_due:
-        return 0, applications_by_date.get(date_value, 0), 0
-    if phase.phase_number == 1 and phase.applications_per_day == 2:
-        return _phase_one_adherence_counts(applications, history, date_value)
-    expected = phase.applications_per_day
-    completed = applications_by_date.get(date_value, 0)
-    return expected, completed, min(completed, expected)
-
-
-def _protocol_phases_by_number(db: Session) -> dict[int, TaperProtocolPhase]:
-    phases = db.execute(select(TaperProtocolPhase)).scalars()
-    return {phase.phase_number: phase for phase in phases}
+def _canonical_schedule_as_of(
+    phase_started_at: datetime,
+    range_end: date,
+    timezone: tzinfo,
+) -> datetime:
+    expectation = CANONICAL_V1.daily_expectation(
+        phase_started_at,
+        range_end,
+        timezone=timezone,
+    )
+    return expectation.windows[-1].end
 
 
 def calculate_episode_adherence(
@@ -176,63 +187,69 @@ def calculate_episode_adherence(
     if not histories:
         return []
 
-    protocol_phases = _protocol_phases_by_number(db)
     applications = _applications_for_episode(db, episode.id)
-    applications_by_date = _applications_by_local_date(applications)
+    timezone = deployment_tz()
     today = local_date(utc_now())
     calculated_at = utc_now()
     rows: list[CalculatedAdherenceDay] = []
 
-    # Persisted adherence is audit-oriented and intentionally uses a fixed
-    # protocol schedule anchored to each phase start date. This is separate from
-    # the existing rolling /episodes/due reminder behavior.
     for history in histories:
-        phase = protocol_phases.get(history.phase_number)
-        if phase is None:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="protocol phase missing")
+        try:
+            phase = CANONICAL_V1.phase(history.phase_number)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="protocol phase missing") from exc
 
-        phase_start_date = local_date(history.started_at)
-        phase_end_date = local_date(history.ended_at) if history.ended_at is not None else to_date + timedelta(days=1)
+        phase_started_at = to_local(history.started_at)
+        phase_start_date = phase_started_at.date()
+        phase_ended_at = to_local(history.ended_at) if history.ended_at is not None else None
+        phase_end_date = phase_ended_at.date() if phase_ended_at is not None else to_date + timedelta(days=1)
         range_start = max(from_date, phase_start_date)
         range_end = min(to_date, phase_end_date - timedelta(days=1))
         if range_start > range_end:
             continue
 
-        next_due_date = phase_start_date + timedelta(days=phase.apply_every_n_days)
-        uncredited_applications_by_date = dict(applications_by_date)
+        phase_applications = _valid_phase_applications(applications, history, phase.phase_number)
+        applications_by_date = _applications_by_local_date(phase_applications, timezone)
 
-        def consume_application(date_key: date) -> None:
-            remaining = uncredited_applications_by_date.get(date_key, 0)
-            if remaining <= 1:
-                uncredited_applications_by_date.pop(date_key, None)
-            else:
-                uncredited_applications_by_date[date_key] = remaining - 1
+        if phase.phase_number == 1:
+            schedule_days = (
+                (date_value, None)
+                for date_value in _iter_dates(range_start, range_end)
+            )
+        else:
+            schedule_days = (
+                (schedule_day.date, schedule_day)
+                for schedule_day in CANONICAL_V1.rolling_schedule(
+                    phase_number=phase.phase_number,
+                    phase_started_at=phase_started_at,
+                    applications=phase_applications,
+                    from_date=phase_start_date,
+                    to_date=range_end,
+                    as_of=_canonical_schedule_as_of(phase_started_at, range_end, timezone),
+                    timezone=timezone,
+                )
+                if schedule_day.date >= range_start
+            )
 
-        iteration_start = range_start if phase.phase_number == 1 and phase.applications_per_day == 2 else phase_start_date
-        for date_value in _iter_dates(iteration_start, range_end):
-            if phase.phase_number == 1 and phase.applications_per_day == 2:
-                expected, completed, credited = _adherence_counts_for_date(phase, history, applications, applications_by_date, date_value)
+        for date_value, schedule_day in schedule_days:
+            if phase.phase_number == 1:
+                expected, completed, credited = _phase_one_adherence_counts(
+                    applications_by_date,
+                    phase_started_at,
+                    date_value,
+                    timezone,
+                )
             else:
-                completed = applications_by_date.get(date_value, 0)
-                has_application = uncredited_applications_by_date.get(date_value, 0) >= phase.applications_per_day
-                if date_value >= next_due_date and has_application:
+                completed = len(applications_by_date.get(date_value, []))
+                if schedule_day.status == RollingScheduleStatus.CREDITED:
                     expected = phase.applications_per_day
-                    credited = expected
-                    consume_application(date_value)
-                    next_due_date = date_value + timedelta(days=phase.apply_every_n_days)
-                elif date_value == next_due_date:
+                    credited = min(expected, phase.applications_per_day)
+                elif schedule_day.status in {RollingScheduleStatus.DUE, RollingScheduleStatus.MISSED}:
                     expected = phase.applications_per_day
                     credited = 0
-                elif date_value < next_due_date and has_application:
-                    expected = phase.applications_per_day
-                    credited = expected
-                    consume_application(date_value)
-                    next_due_date = date_value + timedelta(days=phase.apply_every_n_days)
                 else:
                     expected = 0
                     credited = 0
-            if date_value < range_start:
-                continue
             rows.append(
                 CalculatedAdherenceDay(
                     account_id=episode.account_id,

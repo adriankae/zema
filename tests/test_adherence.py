@@ -17,7 +17,15 @@ from app.adherence import (
 from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.core.time import local_date, utc_now
-from app.models import Account, BodyLocation, EczemaEpisode, EpisodeDailyAdherence, EpisodePhaseHistory, Subject
+from app.models import (
+    Account,
+    BodyLocation,
+    EczemaEpisode,
+    EpisodeDailyAdherence,
+    EpisodePhaseHistory,
+    Subject,
+    TaperProtocolPhase,
+)
 from app.services import create_episode, create_location, create_subject, delete_application, heal_episode, log_application, void_application
 
 
@@ -34,8 +42,20 @@ def _make_episode(db, account, *, started_at: datetime | None = None):
     return episode, subject, location
 
 
-def _log_application(db, account, episode_id: int, applied_at: datetime):
-    return log_application(db, account, episode_id, applied_at, "steroid", None, None, None, "user", "test")
+def _log_application(db, account, episode_id: int, applied_at: datetime, *, phase_number_snapshot: int | None = None):
+    return log_application(
+        db,
+        account,
+        episode_id,
+        applied_at,
+        "steroid",
+        None,
+        None,
+        None,
+        "user",
+        "test",
+        phase_number_snapshot=phase_number_snapshot,
+    )
 
 
 def test_model_create_duplicate_and_check_constraints():
@@ -452,6 +472,208 @@ def test_taper_adherence_rolling_schedule_is_stable_across_short_windows(monkeyp
         assert month_by_date[date(2026, 5, 26)].status == "not_due"
         assert week_by_date[date(2026, 5, 27)].status == "missed"
         assert month_by_date[date(2026, 5, 27)].status == "missed"
+        for date_value, short_row in week_by_date.items():
+            assert short_row == month_by_date[date_value]
+    finally:
+        db.close()
+
+
+def test_taper_adherence_uses_canonical_phase_definition_not_db_mirror(monkeypatch):
+    import app.adherence as adherence
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 25, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 5, 1, 8, tzinfo=timezone.utc))
+        heal_episode(db, account, episode.id, datetime(2026, 5, 20, 8, tzinfo=timezone.utc), "user", "test")
+
+        phase_two = db.get(TaperProtocolPhase, 2)
+        phase_two.apply_every_n_days = 7
+        db.commit()
+
+        rows = calculate_episode_adherence(db, account, episode.id, date(2026, 5, 22), date(2026, 5, 22))
+
+        assert rows[0].expected_applications == 1
+        assert rows[0].credited_applications == 0
+        assert rows[0].status == "missed"
+    finally:
+        db.close()
+
+
+def test_taper_adherence_filters_pre_phase_and_foreign_applications_before_crediting(monkeypatch):
+    import app.adherence as adherence
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 25, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 5, 1, 8, tzinfo=timezone.utc))
+        heal_episode(db, account, episode.id, datetime(2026, 5, 20, 12, tzinfo=timezone.utc), "user", "test")
+
+        _log_application(db, account, episode.id, datetime(2026, 5, 20, 11, tzinfo=timezone.utc))
+        _log_application(
+            db,
+            account,
+            episode.id,
+            datetime(2026, 5, 21, 9, tzinfo=timezone.utc),
+            phase_number_snapshot=1,
+        )
+        _log_application(db, account, episode.id, datetime(2026, 5, 22, 9, tzinfo=timezone.utc))
+        _log_application(db, account, episode.id, datetime(2026, 5, 22, 10, tzinfo=timezone.utc))
+
+        rows = calculate_episode_adherence(db, account, episode.id, date(2026, 5, 20), date(2026, 5, 22))
+        by_date = {row.date: row for row in rows}
+
+        assert (by_date[date(2026, 5, 20)].expected_applications, by_date[date(2026, 5, 20)].completed_applications) == (0, 0)
+        assert (by_date[date(2026, 5, 21)].expected_applications, by_date[date(2026, 5, 21)].completed_applications) == (0, 0)
+        assert by_date[date(2026, 5, 22)].expected_applications == 1
+        assert by_date[date(2026, 5, 22)].completed_applications == 2
+        assert by_date[date(2026, 5, 22)].credited_applications == 1
+        assert by_date[date(2026, 5, 22)].status == "completed"
+    finally:
+        db.close()
+
+
+def test_early_taper_application_reanchors_the_next_due_date_without_healing_the_missed_date(monkeypatch):
+    import app.adherence as adherence
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 24, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 5, 1, 8, tzinfo=timezone.utc))
+        heal_episode(db, account, episode.id, datetime(2026, 5, 20, 8, tzinfo=timezone.utc), "user", "test")
+        _log_application(db, account, episode.id, datetime(2026, 5, 21, 9, tzinfo=timezone.utc))
+
+        rows = calculate_episode_adherence(db, account, episode.id, date(2026, 5, 20), date(2026, 5, 23))
+        by_date = {row.date: row for row in rows}
+
+        assert by_date[date(2026, 5, 21)].credited_applications == 1
+        assert by_date[date(2026, 5, 21)].status == "completed"
+        assert by_date[date(2026, 5, 22)].expected_applications == 0
+        assert by_date[date(2026, 5, 23)].expected_applications == 1
+        assert by_date[date(2026, 5, 23)].credited_applications == 0
+        assert by_date[date(2026, 5, 23)].status == "missed"
+    finally:
+        db.close()
+
+
+def test_future_taper_due_and_not_due_dates_keep_baseline_expectations(monkeypatch):
+    import app.adherence as adherence
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 20, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 5, 1, 8, tzinfo=timezone.utc))
+        heal_episode(db, account, episode.id, datetime(2026, 5, 20, 8, tzinfo=timezone.utc), "user", "test")
+
+        rows = calculate_episode_adherence(db, account, episode.id, date(2026, 5, 21), date(2026, 5, 22))
+        by_date = {row.date: row for row in rows}
+
+        assert (by_date[date(2026, 5, 21)].expected_applications, by_date[date(2026, 5, 21)].completed_applications, by_date[date(2026, 5, 21)].credited_applications, by_date[date(2026, 5, 21)].status) == (0, 0, 0, "future")
+        assert (by_date[date(2026, 5, 22)].expected_applications, by_date[date(2026, 5, 22)].completed_applications, by_date[date(2026, 5, 22)].credited_applications, by_date[date(2026, 5, 22)].status) == (1, 0, 0, "future")
+    finally:
+        db.close()
+
+
+def test_later_same_local_day_taper_application_still_completes_and_credits(monkeypatch):
+    import app.adherence as adherence
+
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 5, 20, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 5, 1, 8, tzinfo=timezone.utc))
+        heal_episode(db, account, episode.id, datetime(2026, 5, 18, 8, tzinfo=timezone.utc), "user", "test")
+        _log_application(db, account, episode.id, datetime(2026, 5, 20, 15, tzinfo=timezone.utc))
+
+        row = calculate_episode_adherence(db, account, episode.id, date(2026, 5, 20), date(2026, 5, 20))[0]
+
+        assert row.expected_applications == 1
+        assert row.completed_applications == 1
+        assert row.credited_applications == 1
+        assert row.status == "completed"
+    finally:
+        db.close()
+
+
+def test_phase_one_cutoff_and_dst_fold_use_canonical_absolute_slot_boundaries(monkeypatch):
+    import app.adherence as adherence
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 10, 26, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        before_cutoff, _, _ = _make_episode(db, account, started_at=datetime(2026, 4, 26, 11, 59, tzinfo=timezone.utc))
+        at_cutoff, _, _ = _make_episode(db, account, started_at=datetime(2026, 4, 26, 12, tzinfo=timezone.utc))
+        after_cutoff, _, _ = _make_episode(db, account, started_at=datetime(2026, 4, 26, 12, 1, tzinfo=timezone.utc))
+        fold_episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 10, 25, 0, 30, tzinfo=timezone.utc))
+        _log_application(db, account, fold_episode.id, datetime(2026, 10, 25, 1, 15, tzinfo=timezone.utc))
+
+        before = calculate_episode_adherence(db, account, before_cutoff.id, date(2026, 4, 26), date(2026, 4, 26))[0]
+        at = calculate_episode_adherence(db, account, at_cutoff.id, date(2026, 4, 26), date(2026, 4, 26))[0]
+        after = calculate_episode_adherence(db, account, after_cutoff.id, date(2026, 4, 26), date(2026, 4, 26))[0]
+        fold = calculate_episode_adherence(db, account, fold_episode.id, date(2026, 10, 25), date(2026, 10, 25))[0]
+
+        assert before.expected_applications == 2
+        assert at.expected_applications == 1
+        assert after.expected_applications == 1
+        assert fold.expected_applications == 2
+        assert fold.completed_applications == 1
+        assert fold.credited_applications == 1
+        assert fold.status == "partial"
+    finally:
+        db.close()
+
+
+def test_phase_one_midnight_gap_uses_the_normalized_local_boundary(monkeypatch):
+    import app.adherence as adherence
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "America/Santiago")
+    monkeypatch.setattr(adherence, "utc_now", lambda: datetime(2026, 9, 7, 12, tzinfo=timezone.utc))
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 9, 5, 12, tzinfo=timezone.utc))
+        _log_application(db, account, episode.id, datetime(2026, 9, 6, 4, tzinfo=timezone.utc))
+
+        row = calculate_episode_adherence(db, account, episode.id, date(2026, 9, 6), date(2026, 9, 6))[0]
+
+        assert row.expected_applications == 2
+        assert row.completed_applications == 1
+        assert row.credited_applications == 1
+        assert row.status == "partial"
+    finally:
+        db.close()
+
+
+def test_dynamic_and_rebuilt_adherence_rows_match_except_persistence_metadata(monkeypatch):
+    import app.adherence as adherence
+
+    calculated_at = datetime(2026, 1, 4, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(adherence, "utc_now", lambda: calculated_at)
+    db = SessionLocal()
+    try:
+        account = _account(db)
+        episode, _, _ = _make_episode(db, account, started_at=datetime(2026, 1, 1, 8, tzinfo=timezone.utc))
+        _log_application(db, account, episode.id, datetime(2026, 1, 1, 8, tzinfo=timezone.utc))
+
+        dynamic = calculate_episode_adherence(db, account, episode.id, date(2026, 1, 1), date(2026, 1, 2))
+        rebuilt = rebuild_episode_adherence(db, account, episode.id, date(2026, 1, 1), date(2026, 1, 2))
+
+        assert [
+            (row.date, row.phase_number, row.expected_applications, row.completed_applications, row.credited_applications, row.status, row.calculated_at.replace(tzinfo=timezone.utc))
+            for row in dynamic
+        ] == [
+            (row.date, row.phase_number, row.expected_applications, row.completed_applications, row.credited_applications, row.status, row.calculated_at.replace(tzinfo=timezone.utc))
+            for row in rebuilt
+        ]
+        assert [row.source for row in rebuilt] == ["rebuild", "rebuild"]
     finally:
         db.close()
 

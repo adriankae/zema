@@ -25,6 +25,7 @@ from app.models import (
     TaperProtocolPhase,
     TreatmentApplication,
 )
+from app.treatment_protocol import PhaseDefinition, validate_protocol_mirror as validate_canonical_protocol_mirror
 
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,22 @@ def bootstrap_data(db: Session) -> None:
             ]
         )
         db.commit()
+
+
+def validate_protocol_mirror(db: Session) -> None:
+    with db.no_autoflush:
+        phases = tuple(
+            PhaseDefinition(
+                phase_number=row.phase_number,
+                duration_days=row.duration_days,
+                apply_every_n_days=row.apply_every_n_days,
+                applications_per_day=row.applications_per_day,
+            )
+            for row in db.execute(
+                select(TaperProtocolPhase).order_by(TaperProtocolPhase.phase_number.asc())
+            ).scalars()
+        )
+    validate_canonical_protocol_mirror(phases)
 
 
 def authenticate_user(db: Session, username: str, password: str) -> Account:

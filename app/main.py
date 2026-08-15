@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.time import utc_now
 from app.dashboard import router as dashboard_router
-from app.services import bootstrap_data, catch_up_episode_phases
+from app.services import bootstrap_data, catch_up_episode_phases, validate_protocol_mirror
 from app.scheduler import start_scheduler
 
 
@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         bootstrap_data(db)
+        validate_protocol_mirror(db)
         catch_up_episode_phases(db, utc_now(), reason="startup")
     finally:
         db.close()

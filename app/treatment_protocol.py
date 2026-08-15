@@ -20,11 +20,13 @@ __all__ = [
     "DueStatus",
     "PhaseDefinition",
     "PhaseProgressionResult",
+    "ProtocolMirrorMismatchError",
     "RollingScheduleDay",
     "RollingScheduleStatus",
     "TreatmentProtocolV1",
     "TreatmentSlot",
     "TreatmentWindow",
+    "validate_protocol_mirror",
 ]
 
 
@@ -79,6 +81,88 @@ _CANONICAL_PHASES = (
     PhaseDefinition(6, 14, 6, 1),
     PhaseDefinition(7, 14, 7, 1),
 )
+
+
+class ProtocolMirrorMismatchError(ValueError):
+    """The persisted phase mirror differs from canonical Treatment Protocol v1."""
+
+    def __init__(
+        self,
+        *,
+        phase_number: int,
+        field: str,
+        expected: int | str | None,
+        actual: int | str | None,
+    ) -> None:
+        self.phase_number = phase_number
+        self.field = field
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"protocol mirror mismatch: phase {phase_number}, field {field}, "
+            f"expected {expected}, actual {actual}"
+        )
+
+    @property
+    def diagnostic(self) -> dict[str, int | str | None]:
+        return {
+            "phase_number": self.phase_number,
+            "field": self.field,
+            "expected": self.expected,
+            "actual": self.actual,
+        }
+
+
+def validate_protocol_mirror(phases: Iterable[PhaseDefinition]) -> None:
+    """Validate typed phase values against canonical Treatment Protocol v1."""
+
+    actual_phases = tuple(phases)
+    canonical_by_number = {phase.phase_number: phase for phase in _CANONICAL_PHASES}
+    actual_by_number: dict[int, PhaseDefinition] = {}
+    duplicate_numbers: set[int] = set()
+    for phase in actual_phases:
+        if phase.phase_number in actual_by_number:
+            duplicate_numbers.add(phase.phase_number)
+        actual_by_number.setdefault(phase.phase_number, phase)
+
+    for expected_phase in _CANONICAL_PHASES:
+        if expected_phase.phase_number not in actual_by_number:
+            raise ProtocolMirrorMismatchError(
+                phase_number=expected_phase.phase_number,
+                field="phase",
+                expected="present",
+                actual="missing",
+            )
+
+    for phase_number in sorted(duplicate_numbers):
+        raise ProtocolMirrorMismatchError(
+            phase_number=phase_number,
+            field="phase",
+            expected="absent",
+            actual="present",
+        )
+
+    for phase_number in sorted(actual_by_number):
+        if phase_number not in canonical_by_number:
+            raise ProtocolMirrorMismatchError(
+                phase_number=phase_number,
+                field="phase",
+                expected="absent",
+                actual="present",
+            )
+
+    for expected_phase in _CANONICAL_PHASES:
+        actual_phase = actual_by_number[expected_phase.phase_number]
+        for field in ("duration_days", "apply_every_n_days", "applications_per_day"):
+            expected = getattr(expected_phase, field)
+            actual = getattr(actual_phase, field)
+            if actual != expected:
+                raise ProtocolMirrorMismatchError(
+                    phase_number=expected_phase.phase_number,
+                    field=field,
+                    expected=expected,
+                    actual=actual,
+                )
 
 
 class RollingScheduleStatus(str, Enum):

@@ -83,9 +83,11 @@ from app.services import (
     revoke_api_key,
     heal_episode,
     update_application,
+    validate_protocol_mirror,
     void_application,
 )
 from app.models import Account
+from app.treatment_protocol import ProtocolMirrorMismatchError
 
 router = APIRouter()
 
@@ -185,7 +187,15 @@ def install_error_handlers(app: FastAPI) -> None:
 
 
 @router.get("/health")
-def health() -> dict:
+def health(db: Session = Depends(get_db)):
+    try:
+        validate_protocol_mirror(db)
+    except ProtocolMirrorMismatchError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "error", "protocol_mirror": exc.diagnostic},
+        )
+
     payload = {"status": "ok"}
     last_catch_up = get_last_successful_phase_catch_up()
     if last_catch_up is not None:

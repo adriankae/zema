@@ -113,7 +113,7 @@
 - Renamed the Telegram button label from `Due today` to `Due now` while preserving `/due` and stale `Due today` keyboard compatibility.
 - Changed `DELETE /subjects/{subject_id}` to destructively remove subject-owned medical data instead of blocking subjects with episodes.
 - Changed Telegram due/log treatment UX to use location-first due prompts with direct `Log application` actions.
-- Changed phase-1 due logic to use morning/evening slots anchored to the current active phase start, including relapse-day behavior.
+- Changed phase-1 due logic to use deployment-local Morning/Evening Treatment Slots with a half-open 14:00 cutoff: exact 14:00 is Evening, and a partial first day exposes only remaining slots.
 - Changed relapsed active-flare episodes so they can be healed again and become due immediately when appropriate.
 
 ### Security
@@ -177,7 +177,7 @@
 ### Notes
 
 - Existing `/episodes/due` behavior is unchanged.
-- Adherence snapshots use a fixed protocol schedule anchored to each phase start date.
+- Adherence snapshots are historical and auditable: missed scheduled dates remain missed, and each credited valid taper Application re-anchors the next expected date.
 - Extra applications are capped via `credited_applications` and do not inflate adherence score.
 - No Telegram/Hermes/OpenClaw gateway code is included in the backend image.
 

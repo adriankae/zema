@@ -100,13 +100,13 @@ def bootstrap_data(db: Session) -> None:
     if db.execute(select(TaperProtocolPhase.phase_number)).first() is None:
         db.add_all(
             [
-                TaperProtocolPhase(phase_number=1, duration_days=None, apply_every_n_days=1, applications_per_day=2),
-                TaperProtocolPhase(phase_number=2, duration_days=28, apply_every_n_days=2, applications_per_day=1),
-                TaperProtocolPhase(phase_number=3, duration_days=14, apply_every_n_days=3, applications_per_day=1),
-                TaperProtocolPhase(phase_number=4, duration_days=14, apply_every_n_days=4, applications_per_day=1),
-                TaperProtocolPhase(phase_number=5, duration_days=14, apply_every_n_days=5, applications_per_day=1),
-                TaperProtocolPhase(phase_number=6, duration_days=14, apply_every_n_days=6, applications_per_day=1),
-                TaperProtocolPhase(phase_number=7, duration_days=14, apply_every_n_days=7, applications_per_day=1),
+                TaperProtocolPhase(
+                    phase_number=phase.phase_number,
+                    duration_days=phase.duration_days,
+                    apply_every_n_days=phase.apply_every_n_days,
+                    applications_per_day=phase.applications_per_day,
+                )
+                for phase in CANONICAL_V1.phases
             ]
         )
         db.commit()

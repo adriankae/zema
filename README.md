@@ -96,12 +96,18 @@ When you want context, click the `i` button next to a location. The info card sh
 
 Zema tracks each body location separately.
 
+- Treatment Protocol v1 is canonical in code; database protocol rows are a validated mirror.
+- Phase 1 uses deployment-local Morning and Evening Treatment Slots split by a half-open 14:00 cutoff: `[00:00, 14:00)` is Morning and `[14:00, next local midnight)` is Evening. Exactly 14:00 is Evening, and a partial first day exposes only the remaining slots.
 - A new location starts in phase 1.
-- Phase 1 can have morning and evening treatment slots.
 - When you mark a location as healed, it enters tapering phases.
 - Later phases are spaced farther apart.
 - A relapse resets that location without changing the others.
 - Zema catches up phase state after restarts, so the dashboard does not depend on the app being open all the time.
+- Due State is operational and rolling: it describes what is expected now and can move forward after a valid taper Application.
+- Adherence is historical and auditable: missed scheduled dates remain missed, and each credited valid taper Application re-anchors the next expected date.
+- Deleted, voided, pre-phase, future, and phase-foreign Applications do not satisfy slots or move rolling schedules.
+- Phase transitions use deployment-local calendar-day boundaries while stored instants remain timezone/DST safe.
+- Due State and Adherence share canonical phase and Treatment Slot primitives but remain separate strategies.
 
 This is why a normal habit tracker is a poor fit: one person can have several active locations, each with a different phase and next due date.
 
@@ -168,9 +174,10 @@ PostgreSQL
 
 - `zema-be` is the FastAPI backend service.
 - `zema-cli` is the CLI/agent runtime service.
-- `postgres` is the canonical datastore.
+- `postgres` is the canonical datastore for persisted product data.
 - Docker Compose keeps the backend and CLI/agent runtime in separate services.
 - The backend remains the source of truth for treatment, phase, due, and adherence logic.
+- Treatment Protocol v1 is canonical in backend code; `taper_protocol_phases` is its validated persistent mirror. Startup seeds the mirror only when it is empty, and validation is read-only rather than a repair path.
 - The CLI calls the backend over HTTP.
 - Gateway code for Telegram, Hermes, OpenClaw, or similar tools should not run inside `zema-be`.
 
@@ -747,8 +754,10 @@ Rebuild:
 
 Schedule and scoring:
 
-- Adherence snapshots use a fixed phase-start schedule for auditability.
+- Adherence is historical and auditable rather than permanently anchored to phase start: missed scheduled dates remain missed, and each credited valid taper Application re-anchors the next expected date.
+- Deleted, voided, pre-phase, future, and phase-foreign Applications do not satisfy slots or move rolling schedules.
 - `/episodes/due` remains separate operational due/reminder logic.
+- Due State and Adherence share canonical phase and Treatment Slot primitives but remain separate strategies.
 - `completed_applications` is the raw valid logged application count for a day.
 - `credited_applications = min(completed_applications, expected_applications)`.
 - Score is `sum(credited_applications) / sum(expected_applications)`.

@@ -1,11 +1,12 @@
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from app import main as main_module
+from app import main as main_module, services as services_module
 from app.core.database import SessionLocal
 from app.models import Account, BodyLocation, EczemaEpisode, Subject, TaperProtocolPhase, TreatmentApplication
 from app.services import validate_protocol_mirror as validate_database_protocol_mirror
@@ -15,6 +16,10 @@ from app.treatment_protocol import (
     ProtocolMirrorMismatchError,
     validate_protocol_mirror,
 )
+
+
+class _CanonicalSource(NamedTuple):
+    phases: tuple[PhaseDefinition, ...]
 
 
 def test_protocol_mirror_validator_accepts_the_exact_canonical_mirror():
@@ -86,13 +91,55 @@ def test_protocol_mirror_validator_reports_an_unexpected_extra_phase():
     }
 
 
+def _database_phase_values(db):
+    return [
+        (row.phase_number, row.duration_days, row.apply_every_n_days, row.applications_per_day)
+        for row in db.execute(select(TaperProtocolPhase).order_by(TaperProtocolPhase.phase_number.asc())).scalars()
+    ]
+
+
+def test_bootstrap_materializes_exact_canonical_rows_when_the_mirror_is_empty(monkeypatch):
+    injected_phases = (
+        PhaseDefinition(8, 99, 8, 3),
+        PhaseDefinition(9, 101, 9, 4),
+    )
+    monkeypatch.setattr(services_module, "CANONICAL_V1", _CanonicalSource(injected_phases))
+
+    db = SessionLocal()
+    try:
+        db.execute(delete(TaperProtocolPhase))
+        db.commit()
+        assert _database_phase_values(db) == []
+
+        services_module.bootstrap_data(db)
+
+        assert _database_phase_values(db) == [
+            (phase.phase_number, phase.duration_days, phase.apply_every_n_days, phase.applications_per_day)
+            for phase in injected_phases
+        ]
+    finally:
+        db.close()
+
+
+def test_bootstrap_does_not_repair_or_overwrite_an_existing_nonempty_mirror():
+    db = SessionLocal()
+    try:
+        phase = db.get(TaperProtocolPhase, 2)
+        phase.duration_days = 27
+        db.commit()
+        before_rows = _database_phase_values(db)
+
+        services_module.bootstrap_data(db)
+
+        assert _database_phase_values(db) == before_rows
+    finally:
+        db.close()
+
+
 def test_database_protocol_mirror_adapter_accepts_canonical_rows_without_session_writes():
     db = SessionLocal()
     try:
-        before_rows = [
-            (row.phase_number, row.duration_days, row.apply_every_n_days, row.applications_per_day)
-            for row in db.execute(select(TaperProtocolPhase).order_by(TaperProtocolPhase.phase_number.asc())).scalars()
-        ]
+        before_rows = _database_phase_values(db)
         pending_treatment = TreatmentApplication(
             episode_id=999,
             applied_at=datetime(2026, 1, 3, 8, tzinfo=timezone.utc),
@@ -104,10 +151,7 @@ def test_database_protocol_mirror_adapter_accepts_canonical_rows_without_session
 
         assert validate_database_protocol_mirror(db) is None
 
-        after_rows = [
-            (row.phase_number, row.duration_days, row.apply_every_n_days, row.applications_per_day)
-            for row in db.execute(select(TaperProtocolPhase).order_by(TaperProtocolPhase.phase_number.asc())).scalars()
-        ]
+        after_rows = _database_phase_values(db)
         assert after_rows == before_rows
         assert (tuple(db.new), tuple(db.dirty), tuple(db.deleted)) == before_state
     finally:
@@ -147,10 +191,7 @@ def test_database_protocol_mirror_adapter_reports_mismatch_without_repairing_pro
         phase = db.get(TaperProtocolPhase, 2)
         phase.duration_days = 27
         db.commit()
-        before_protocol = [
-            (row.phase_number, row.duration_days, row.apply_every_n_days, row.applications_per_day)
-            for row in db.execute(select(TaperProtocolPhase).order_by(TaperProtocolPhase.phase_number.asc())).scalars()
-        ]
+        before_protocol = _database_phase_values(db)
         before_treatment = [
             (row.id, row.episode_id, row.applied_at, row.treatment_type, row.phase_number_snapshot)
             for row in db.execute(select(TreatmentApplication).order_by(TreatmentApplication.id.asc())).scalars()
@@ -166,10 +207,7 @@ def test_database_protocol_mirror_adapter_reports_mismatch_without_repairing_pro
             "expected": 28,
             "actual": 27,
         }
-        after_protocol = [
-            (row.phase_number, row.duration_days, row.apply_every_n_days, row.applications_per_day)
-            for row in db.execute(select(TaperProtocolPhase).order_by(TaperProtocolPhase.phase_number.asc())).scalars()
-        ]
+        after_protocol = _database_phase_values(db)
         after_treatment = [
             (row.id, row.episode_id, row.applied_at, row.treatment_type, row.phase_number_snapshot)
             for row in db.execute(select(TreatmentApplication).order_by(TreatmentApplication.id.asc())).scalars()

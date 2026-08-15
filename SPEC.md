@@ -96,6 +96,7 @@ The first version must support these workflows:
 * eczema episode model
 * treatment application model
 * basic event log
+* dynamic and persisted historical Adherence with missed/partial-day reporting
 * automatic backend phase progression
 * Docker Compose setup
 * initial protocol seeding
@@ -110,8 +111,6 @@ The first version must support these workflows:
 * multiple protocols
 * advanced audit workflows
 * client reminders
-* missed-dose detection
-* adherence analytics
 * image/photo uploads
 * food tracking
 * gamification
@@ -299,6 +298,8 @@ There is one active protocol in v1.
 
 No protocol version management UI/API is required.
 
+Treatment Protocol v1 is canonical in code. The `taper_protocol_phases` rows are a validated persistent mirror; bootstrap seeds them from the canonical values only when the mirror is empty, and validation does not repair a nonempty mismatch.
+
 ### Phase schedule
 
 | Phase |   Duration | Frequency    |
@@ -340,28 +341,32 @@ The deployment timezone must be configured in backend settings.
 
 ## 9.3 Calendar behavior
 
-Phase logic and due logic are based on **calendar day semantics**, not exact hour differences.
+Phase transitions and schedule dates use **deployment-local calendar-day semantics**, not fixed elapsed-hour intervals. Timezone-aware instants are stored in UTC and converted through the deployment timezone, so local boundaries remain safe across DST changes.
 
 Rules:
 
-* only the calendar day matters for due logic
-* application times within a day do not matter for schedule satisfaction
-* phase ends at the calculated calendar day boundary
-* phase start time may be stored, but day-based calculations drive due logic
+* phase transitions use deployment-local calendar-day boundaries
+* Phase 1 has local Treatment Slots: Morning is `[00:00, 14:00)` and Evening is `[14:00, next local midnight)`
+* exact local 14:00 is Evening, and a partial first Phase 1 day exposes only the remaining slots
+* taper expected dates use local calendar-day cadence; an application's time within that local date does not change its date credit once the application is valid
+* deleted, voided, pre-phase, future, and phase-foreign Applications do not satisfy slots or move rolling schedules
+* Due State is operational and rolling; Adherence is historical and auditable, and the two strategies share canonical primitives without being unified
 
 ---
 
-## 9.4 Phase 2 anchor rule
+## 9.4 Rolling taper anchor rule
+
+For taper phases, the first expected date is the phase start's local calendar date plus the phase cadence. Each credited valid taper Application re-anchors the next expected date by that cadence. A missed scheduled date remains missed; a later valid Application does not retroactively satisfy it.
 
 Example:
 
 If phase 2 starts on April 1 at 18:00 local deployment time:
 
-* due days are April 1, 3, 5, ...
+* the first expected date is April 3
+* if a valid Application is credited on April 3, the next expected date is April 5
+* if April 3 is missed and a valid Application is credited on April 4, April 3 remains missed and the next expected date is April 6
 
-Additionally:
-
-* the application associated with the heal day counts as the phase 2 application for April 1
+An Application can satisfy or re-anchor a taper schedule only when it is not deleted or voided, is not before the phase start or future at evaluation time, and has the current phase snapshot. An Application from another phase is phase-foreign and does not count.
 
 This rule must be implemented exactly.
 
@@ -516,9 +521,10 @@ For this product spec, the required minimum is:
 
 * backend can determine whether an episode is due today
 * backend can return next due date/timestamp
-* due calculations are based on phase rules and non-deleted applications
-* only calendar day matters
-* adherence analytics is out of scope
+* due calculations use canonical phase and Treatment Slot rules and valid Applications
+* Phase 1 uses the local half-open Morning/Evening windows; taper phases use rolling local calendar-day dates
+* deleted, voided, pre-phase, future, and phase-foreign Applications do not satisfy slots or move rolling schedules
+* Due State is operational and rolling; Adherence is historical and auditable but remains a separate strategy
 
 ---
 
@@ -1039,8 +1045,8 @@ Open-ended until user marks healed.
 When healed is marked:
 
 * phase 2 starts immediately on that same local calendar day
-* heal-day application counts as phase 2 application for that day
-* next due day is two calendar days later
+* an Application is counted for phase 2 only when it is a valid phase-2 Application at or after the phase start
+* the first phase 2 expected date is two local calendar days after phase 2 starts; each credited valid taper Application re-anchors the next expected date
 
 ---
 
@@ -1056,10 +1062,9 @@ Store timestamps in UTC.
 
 ## 21.4 Due calculations
 
-Only calendar day counts.
+Phase 1 uses local Treatment Slots, so the exact instant determines whether an Application satisfies Morning or Evening. Taper phases use local calendar-day dates, so the time within a local date does not change that date's credit once the Application is valid.
 
-* early vs late within same day does not matter
-* application time-of-day does not matter for satisfying a due day
+Deleted, voided, pre-phase, future, and phase-foreign Applications do not satisfy slots or move rolling schedules.
 
 ---
 

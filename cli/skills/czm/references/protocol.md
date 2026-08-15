@@ -45,7 +45,7 @@ The agent must not simulate or predict these transitions on its own:
 - phase 6 -> phase 7
 - phase 7 -> `obsolete`
 
-The backend and CLI are authoritative for all due logic and phase progression.
+Backend canonical code is authoritative for Due State and phase progression. The CLI is an HTTP adapter/consumer only: it must ask the backend for Due State and phase-progression outcomes rather than reconstructing schedule or phase logic locally.
 
 ## Due Semantics
 

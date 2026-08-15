@@ -74,7 +74,8 @@ You must implement all domain rules exactly:
 * heal → phase 2 immediately
 * relapse → reset to phase 1
 * automatic phase progression (backend scheduler)
-* calendar-day-based logic (not time-of-day)
+* phase transitions and taper schedule dates use deployment-local calendar-day semantics
+* Phase 1 uses deployment-local Morning `[00:00, 14:00)` and Evening `[14:00, next local midnight)` Treatment Slots; exact 14:00 is Evening, and a partial first day exposes only the remaining slots
 * correct phase durations
 * due logic basics
 * application CRUD with constraints

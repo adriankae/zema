@@ -211,6 +211,7 @@ def test_phase_one_due_uses_morning_and_evening_slots(client, auth_headers, monk
         json={"episode_id": episode_id, "applied_at": "2026-04-06T09:30:00Z"},
     )
     assert logged_morning.status_code == 201
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 4, 6, 10, tzinfo=timezone.utc))
     assert client.get("/episodes/due", headers=auth_headers).json()["due"] == []
 
     monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 4, 6, 15, tzinfo=timezone.utc))
@@ -228,6 +229,7 @@ def test_phase_one_due_uses_morning_and_evening_slots(client, auth_headers, monk
         json={"episode_id": episode_id, "applied_at": "2026-04-06T16:30:00Z"},
     )
     assert logged_evening.status_code == 201
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 4, 6, 17, tzinfo=timezone.utc))
     assert client.get("/episodes/due", headers=auth_headers).json()["due"] == []
 
 
@@ -323,6 +325,39 @@ def test_phase_one_evening_due_returns_morning_logged_episodes(client, auth_head
     assert all(item["applications_expected_today"] == 2 for item in due_by_episode_id.values())
 
 
+def test_phase_one_exact_cutoff_is_evening_due_with_missed_morning(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    creation_now = datetime(2026, 4, 6, 6, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: creation_now)
+    episode = _create_episode(client, auth_headers, location_code="berlin_exact_cutoff", location_name="Berlin exact cutoff")
+
+    exact_cutoff = datetime(2026, 4, 6, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: exact_cutoff)
+    monkeypatch.setattr(services, "utc_now", lambda: exact_cutoff)
+
+    due = client.get("/episodes/due", headers=auth_headers).json()["due"]
+
+    assert due == [
+        {
+            "episode_id": episode["id"],
+            "subject_id": episode["subject_id"],
+            "location_id": episode["location_id"],
+            "current_phase_number": 1,
+            "treatment_due_today": True,
+            "next_due_at": "2026-04-06T12:00:00Z",
+            "last_application_at": None,
+            "due_slot": "evening",
+            "missed_slots_today": ["morning"],
+            "applications_completed_today": 0,
+            "applications_expected_today": 2,
+        }
+    ]
+
+
 def test_phase_one_berlin_evening_application_satisfies_evening_slot(client, auth_headers, monkeypatch):
     import app.api as api
     import app.services as services
@@ -370,6 +405,7 @@ def test_phase_one_berlin_episode_created_after_cutoff_expects_evening_only(clie
     assert len(due) == 1
     assert due[0]["episode_id"] == episode["id"]
     assert due[0]["due_slot"] == "evening"
+    assert due[0]["next_due_at"] == "2026-04-06T12:00:00Z"
     assert due[0]["applications_expected_today"] == 1
     assert due[0]["missed_slots_today"] == []
 
@@ -398,6 +434,7 @@ def test_phase_one_after_cutoff_marks_missed_morning_without_requiring_catchup(c
         json={"episode_id": episode_id, "applied_at": "2026-04-06T16:30:00Z"},
     )
     assert logged_evening.status_code == 201
+    monkeypatch.setattr(services, "utc_now", lambda: datetime(2026, 4, 6, 17, tzinfo=timezone.utc))
     assert client.get("/episodes/due", headers=auth_headers).json()["due"] == []
 
 
@@ -419,6 +456,505 @@ def test_taper_due_returns_only_currently_due_items(client, auth_headers, monkey
     assert due[0]["current_phase_number"] == 2
     assert due[0]["due_slot"] is None
     assert due[0]["missed_slots_today"] == []
+
+
+def test_due_adapter_routes_each_active_episode_through_public_canonical_due_state(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.models import TreatmentApplication
+    from app.treatment_protocol import ApplicationInput, CANONICAL_V1
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    now = datetime(2026, 4, 6, 13, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    phase_one = _create_episode(client, auth_headers, location_code="canonical_due_phase_one", location_name="Canonical due phase one")
+    _create_taper_episode(
+        client,
+        auth_headers,
+        location_code="canonical_due_taper",
+        healed_at="2026-04-05T08:00:00Z",
+    )
+    db = SessionLocal()
+    try:
+        db.add(
+            TreatmentApplication(
+                episode_id=phase_one["id"],
+                applied_at=datetime(2026, 4, 6, 7, tzinfo=timezone.utc),
+                treatment_type="other",
+                phase_number_snapshot=1,
+                is_deleted=False,
+                is_voided=False,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    calls = []
+    original_due_state = CANONICAL_V1.due_state
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return original_due_state(**kwargs)
+
+    monkeypatch.setattr(CANONICAL_V1, "due_state", spy)
+
+    response = client.get("/episodes/due", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert len(calls) == 2
+    assert [call["phase_number"] for call in calls] == [1, 2]
+    for call in calls:
+        assert call["timezone"] == ZoneInfo("Europe/Berlin")
+        assert call["now"].tzinfo is not None
+        assert call["now"].utcoffset() is not None
+        assert call["phase_started_at"].tzinfo is not None
+        assert call["phase_started_at"].utcoffset() is not None
+        assert all(isinstance(application, ApplicationInput) for application in call["applications"])
+        assert all(application.applied_at.tzinfo is not None for application in call["applications"])
+
+
+def test_due_adapter_uses_latest_valid_taper_application_as_anchor(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.models import TreatmentApplication
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    creation_now = datetime(2026, 5, 20, 8, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: creation_now)
+    episode = _create_taper_episode(
+        client,
+        auth_headers,
+        location_code="canonical_due_anchor",
+        healed_at="2026-05-20T08:00:00Z",
+    )
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 5, 21, 9, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=2,
+                    is_deleted=False,
+                    is_voided=False,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 5, 23, 9, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=1,
+                    is_deleted=False,
+                    is_voided=False,
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    now = datetime(2026, 5, 24, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+
+    due = client.get("/episodes/due", headers=auth_headers).json()["due"]
+
+    assert due == [
+        {
+            "episode_id": episode["id"],
+            "subject_id": episode["subject_id"],
+            "location_id": episode["location_id"],
+            "current_phase_number": 2,
+            "treatment_due_today": True,
+            "next_due_at": "2026-05-24T00:00:00Z",
+            "last_application_at": "2026-05-21T09:00:00Z",
+            "due_slot": None,
+            "missed_slots_today": [],
+            "applications_completed_today": 0,
+            "applications_expected_today": 1,
+        }
+    ]
+
+
+def test_due_phase_one_ignores_invalid_applications_and_future_after_now(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.models import TreatmentApplication
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    creation_now = datetime(2026, 4, 6, 8, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: creation_now)
+    episode = _create_episode(client, auth_headers, location_code="invalid_phase_one_apps", location_name="Invalid phase one apps")
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 4, 6, 7, 30, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=1,
+                    is_deleted=False,
+                    is_voided=False,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 4, 6, 8, 15, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=2,
+                    is_deleted=False,
+                    is_voided=False,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 4, 6, 8, 30, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=1,
+                    is_deleted=True,
+                    is_voided=False,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 4, 6, 8, 45, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=1,
+                    is_deleted=False,
+                    is_voided=True,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 4, 6, 10, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=1,
+                    is_deleted=False,
+                    is_voided=False,
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    now = datetime(2026, 4, 6, 9, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+
+    due = client.get("/episodes/due", headers=auth_headers).json()["due"]
+
+    assert due == [
+        {
+            "episode_id": episode["id"],
+            "subject_id": episode["subject_id"],
+            "location_id": episode["location_id"],
+            "current_phase_number": 1,
+            "treatment_due_today": True,
+            "next_due_at": "2026-04-06T00:00:00Z",
+            "last_application_at": None,
+            "due_slot": "morning",
+            "missed_slots_today": [],
+            "applications_completed_today": 0,
+            "applications_expected_today": 2,
+        }
+    ]
+
+
+def test_due_taper_ignores_invalid_applications_for_anchor_and_last_application(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.models import TreatmentApplication
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    creation_now = datetime(2026, 5, 20, 8, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: creation_now)
+    episode = _create_taper_episode(
+        client,
+        auth_headers,
+        location_code="invalid_taper_apps",
+        healed_at="2026-05-20T08:00:00Z",
+    )
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 5, 20, 7, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=2,
+                    is_deleted=False,
+                    is_voided=False,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 5, 21, 9, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=2,
+                    is_deleted=True,
+                    is_voided=False,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 5, 21, 10, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=2,
+                    is_deleted=False,
+                    is_voided=True,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 5, 23, 9, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=1,
+                    is_deleted=False,
+                    is_voided=False,
+                ),
+                TreatmentApplication(
+                    episode_id=episode["id"],
+                    applied_at=datetime(2026, 5, 25, 9, tzinfo=timezone.utc),
+                    treatment_type="other",
+                    phase_number_snapshot=2,
+                    is_deleted=False,
+                    is_voided=False,
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    now = datetime(2026, 5, 24, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+
+    due = client.get("/episodes/due", headers=auth_headers).json()["due"]
+
+    assert due == [
+        {
+            "episode_id": episode["id"],
+            "subject_id": episode["subject_id"],
+            "location_id": episode["location_id"],
+            "current_phase_number": 2,
+            "treatment_due_today": True,
+            "next_due_at": "2026-05-24T00:00:00Z",
+            "last_application_at": None,
+            "due_slot": None,
+            "missed_slots_today": [],
+            "applications_completed_today": 0,
+            "applications_expected_today": 1,
+        }
+    ]
+
+
+def test_due_uses_canonical_taper_cadence_not_mutated_database_mirror(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.models import TaperProtocolPhase
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    creation_now = datetime(2026, 5, 20, 8, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: creation_now)
+    episode = _create_taper_episode(
+        client,
+        auth_headers,
+        location_code="mutated_due_mirror",
+        healed_at="2026-05-20T08:00:00Z",
+    )
+
+    db = SessionLocal()
+    try:
+        phase_two = db.get(TaperProtocolPhase, 2)
+        phase_two.apply_every_n_days = 7
+        phase_two.applications_per_day = 9
+        db.commit()
+    finally:
+        db.close()
+
+    now = datetime(2026, 5, 22, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+
+    due = client.get("/episodes/due", headers=auth_headers).json()["due"]
+
+    assert due == [
+        {
+            "episode_id": episode["id"],
+            "subject_id": episode["subject_id"],
+            "location_id": episode["location_id"],
+            "current_phase_number": 2,
+            "treatment_due_today": True,
+            "next_due_at": "2026-05-22T00:00:00Z",
+            "last_application_at": None,
+            "due_slot": None,
+            "missed_slots_today": [],
+            "applications_completed_today": 0,
+            "applications_expected_today": 1,
+        }
+    ]
+
+
+def test_due_serializes_berlin_fold_boundaries_as_utc_instants(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "Europe/Berlin")
+    creation_now = datetime(2026, 10, 24, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: creation_now)
+    episode = _create_episode(client, auth_headers, location_code="berlin_fold_due", location_name="Berlin fold due")
+
+    now = datetime(2026, 10, 25, 0, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+
+    due = client.get("/episodes/due", headers=auth_headers).json()["due"]
+
+    assert due == [
+        {
+            "episode_id": episode["id"],
+            "subject_id": episode["subject_id"],
+            "location_id": episode["location_id"],
+            "current_phase_number": 1,
+            "treatment_due_today": True,
+            "next_due_at": "2026-10-24T22:00:00Z",
+            "last_application_at": None,
+            "due_slot": "morning",
+            "missed_slots_today": [],
+            "applications_completed_today": 0,
+            "applications_expected_today": 2,
+        }
+    ]
+
+
+def test_due_serializes_santiago_midnight_gap_as_normalized_utc_instant(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deployment_timezone", "America/Santiago")
+    creation_now = datetime(2026, 9, 5, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: creation_now)
+    episode = _create_episode(client, auth_headers, location_code="santiago_gap_due", location_name="Santiago gap due")
+
+    now = datetime(2026, 9, 6, 4, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+
+    due = client.get("/episodes/due", headers=auth_headers).json()["due"]
+
+    assert due == [
+        {
+            "episode_id": episode["id"],
+            "subject_id": episode["subject_id"],
+            "location_id": episode["location_id"],
+            "current_phase_number": 1,
+            "treatment_due_today": True,
+            "next_due_at": "2026-09-06T04:00:00Z",
+            "last_application_at": None,
+            "due_slot": "morning",
+            "missed_slots_today": [],
+            "applications_completed_today": 0,
+            "applications_expected_today": 2,
+        }
+    ]
+
+
+def test_due_contract_preserves_keys_types_scope_order_and_obsolete_exclusion(client, auth_headers, monkeypatch):
+    import app.api as api
+    import app.services as services
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.core.security import hash_password
+    from app.models import Account, EczemaEpisode
+
+    monkeypatch.setattr(settings, "deployment_timezone", "UTC")
+    now = datetime(2026, 4, 6, 9, tzinfo=timezone.utc)
+    monkeypatch.setattr(api, "utc_now", lambda: now)
+    monkeypatch.setattr(services, "utc_now", lambda: now)
+    first = _create_episode(client, auth_headers, location_code="contract_first", location_name="Contract first")
+    second = _create_episode(client, auth_headers, location_code="contract_second", location_name="Contract second")
+    obsolete = _create_episode(client, auth_headers, location_code="contract_obsolete", location_name="Contract obsolete")
+
+    db = SessionLocal()
+    try:
+        other = Account(username="contract-other", password_hash=hash_password("pw"), is_active=True)
+        db.add(other)
+        db.commit()
+        other_subject = services.create_subject(db, other, "Other child")
+        other_location = services.create_location(db, other, "contract_other", "Contract other")
+        services.create_episode(
+            db,
+            other,
+            other_subject.id,
+            other_location.id,
+            "v1",
+            now,
+            "user",
+            str(other.id),
+        )
+        stored_obsolete = db.get(EczemaEpisode, obsolete["id"])
+        stored_obsolete.status = "obsolete"
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/episodes/due", headers=auth_headers)
+    assert response.status_code == 200
+    due = response.json()["due"]
+    assert [item["episode_id"] for item in due] == [first["id"], second["id"]]
+    assert [
+        "episode_id",
+        "subject_id",
+        "location_id",
+        "current_phase_number",
+        "treatment_due_today",
+        "next_due_at",
+        "last_application_at",
+        "due_slot",
+        "missed_slots_today",
+        "applications_completed_today",
+        "applications_expected_today",
+    ] == list(due[0])
+    assert due[0] == {
+        "episode_id": first["id"],
+        "subject_id": first["subject_id"],
+        "location_id": first["location_id"],
+        "current_phase_number": 1,
+        "treatment_due_today": True,
+        "next_due_at": "2026-04-06T00:00:00Z",
+        "last_application_at": None,
+        "due_slot": "morning",
+        "missed_slots_today": [],
+        "applications_completed_today": 0,
+        "applications_expected_today": 2,
+    }
+    assert isinstance(due[0]["episode_id"], int)
+    assert isinstance(due[0]["subject_id"], int)
+    assert isinstance(due[0]["location_id"], int)
+    assert isinstance(due[0]["current_phase_number"], int)
+    assert isinstance(due[0]["treatment_due_today"], bool)
+    assert isinstance(due[0]["next_due_at"], str) and due[0]["next_due_at"].endswith("Z")
+    assert due[0]["last_application_at"] is None
+    assert isinstance(due[0]["missed_slots_today"], list)
+    assert isinstance(due[0]["applications_completed_today"], int)
+    assert isinstance(due[0]["applications_expected_today"], int)
+
+    scoped = client.get(f"/episodes/due?subject_id={second['subject_id']}", headers=auth_headers)
+    assert [item["episode_id"] for item in scoped.json()["due"]] == [second["id"]]
 
 
 def test_due_read_catches_up_missed_taper_phase(client, auth_headers, monkeypatch):
@@ -933,5 +1469,6 @@ def test_next_day_after_evening_relapse_resumes_two_phase_one_slots(client, auth
     assert len(due) == 1
     assert due[0]["episode_id"] == episode_id
     assert due[0]["due_slot"] == "morning"
+    assert due[0]["next_due_at"] == "2026-04-07T00:00:00Z"
     assert due[0]["applications_completed_today"] == 0
     assert due[0]["applications_expected_today"] == 2

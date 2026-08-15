@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import delete, or_, select
@@ -26,7 +26,9 @@ from app.models import (
     TreatmentApplication,
 )
 from app.treatment_protocol import (
+    ApplicationInput,
     CANONICAL_V1,
+    DueStatus,
     PhaseDefinition,
     PhaseProgressionResult,
     validate_protocol_mirror as validate_canonical_protocol_mirror,
@@ -907,56 +909,17 @@ def list_events(db: Session, account: Account, episode_id: int, event_type: str 
     return list(db.execute(stmt.order_by(EpisodeEvent.occurred_at.asc(), EpisodeEvent.id.asc())).scalars())
 
 
-def _phase_one_slot_due_item(episode: EczemaEpisode, phase: TaperProtocolPhase, applications: list[TreatmentApplication], now: datetime) -> dict | None:
-    local_now = to_local(now)
-    local_phase_start = to_local(episode.phase_started_at)
-    today = local_now.date()
-    tz = deployment_tz()
-    today_start_local = datetime.combine(today, time.min, tzinfo=tz)
-    cutoff_local = datetime.combine(today, time(14, 0), tzinfo=tz)
-    tomorrow_start_local = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
-    day_start = local_midnight(today)
-    cutoff = cutoff_local.astimezone(timezone.utc)
-    morning_start_local = max(today_start_local, local_phase_start)
-    evening_start_local = max(cutoff_local, local_phase_start)
-    morning_exists = morning_start_local < cutoff_local
-    evening_exists = evening_start_local < tomorrow_start_local
-    applications_expected_today = int(morning_exists) + int(evening_exists)
-
-    def _valid_phase_one_application(application: TreatmentApplication) -> bool:
-        return application.phase_number_snapshot in {None, 1} and to_local(application.applied_at) >= local_phase_start
-
-    valid_phase_one_applications = [application for application in applications if _valid_phase_one_application(application)]
-    phase_one_today = [
-        application
-        for application in valid_phase_one_applications
-        if today_start_local <= to_local(application.applied_at) < tomorrow_start_local
-    ]
-
-    def _slot_satisfied(slot_start: datetime, slot_end: datetime) -> bool:
-        return any(slot_start <= to_local(application.applied_at) < slot_end for application in valid_phase_one_applications)
-
-    morning_satisfied = morning_exists and _slot_satisfied(morning_start_local, cutoff_local)
-    evening_satisfied = evening_exists and _slot_satisfied(evening_start_local, tomorrow_start_local)
-    last_application_at = applications[-1].applied_at if applications else None
-    base = {
-        "episode_id": episode.id,
-        "subject_id": episode.subject_id,
-        "location_id": episode.location_id,
-        "current_phase_number": episode.current_phase_number,
-        "treatment_due_today": True,
-        "last_application_at": last_application_at,
-        "applications_completed_today": len(phase_one_today),
-        "applications_expected_today": applications_expected_today,
-    }
-    if local_now < cutoff_local:
-        if not morning_exists or morning_satisfied:
-            return None
-        return {**base, "next_due_at": day_start, "due_slot": "morning", "missed_slots_today": []}
-    if not evening_exists or evening_satisfied:
-        return None
-    missed_slots = [] if not morning_exists or morning_satisfied else ["morning"]
-    return {**base, "next_due_at": cutoff, "due_slot": "evening", "missed_slots_today": missed_slots}
+def _due_next_due_at(state, deployment_timezone) -> datetime:
+    next_due_at = state.next_due_at
+    if state.phase_number == 1 and state.due_slot is not None:
+        local_now = state.as_of.astimezone(deployment_timezone)
+        expectation = CANONICAL_V1.daily_expectation(
+            local_midnight(local_now),
+            local_now.date(),
+            timezone=deployment_timezone,
+        )
+        next_due_at = next(window.start for window in expectation.windows if window.slot == state.due_slot)
+    return next_due_at.astimezone(timezone.utc)
 
 
 def due_items(db: Session, account: Account, subject_id: int | None = None) -> list[dict]:
@@ -969,8 +932,6 @@ def due_items(db: Session, account: Account, subject_id: int | None = None) -> l
                 select(TreatmentApplication)
                 .where(
                     TreatmentApplication.episode_id.in_(episode_ids),
-                    TreatmentApplication.is_deleted.is_(False),
-                    TreatmentApplication.is_voided.is_(False),
                 )
                 .order_by(TreatmentApplication.episode_id.asc(), TreatmentApplication.applied_at.asc(), TreatmentApplication.id.asc())
             ).scalars()
@@ -978,41 +939,46 @@ def due_items(db: Session, account: Account, subject_id: int | None = None) -> l
         for application in applications:
             applications_by_episode.setdefault(application.episode_id, []).append(application)
     items: list[dict] = []
-    now = utc_now()
+    deployment_timezone = deployment_tz()
+    now = to_local(utc_now())
     for episode in episodes:
         if episode.status == "obsolete":
             continue
-        applications = applications_by_episode.get(episode.id, [])
-        last_application_at = applications[-1].applied_at if applications else None
-        if episode.current_phase_number == 1:
-            phase = get_protocol_phase(db, 1)
-            item = _phase_one_slot_due_item(episode, phase, applications, now)
-            if item is not None:
-                items.append(item)
+        applications = tuple(
+            ApplicationInput(
+                applied_at=to_local(application.applied_at),
+                phase_number_snapshot=application.phase_number_snapshot,
+                is_deleted=application.is_deleted,
+                is_voided=application.is_voided,
+            )
+            for application in applications_by_episode.get(episode.id, [])
+        )
+        state = CANONICAL_V1.due_state(
+            phase_number=episode.current_phase_number,
+            phase_started_at=to_local(episode.phase_started_at),
+            applications=applications,
+            now=now,
+            timezone=deployment_timezone,
+        )
+        if state.status != DueStatus.DUE:
             continue
-        phase = get_protocol_phase(db, episode.current_phase_number)
-        anchor = last_application_at or episode.phase_started_at
-        anchor_date = local_date(anchor)
-        interval = phase.apply_every_n_days
-        today = local_date(now)
-        days_since_anchor = (today - anchor_date).days
-        due_today = days_since_anchor >= interval
-        if not due_today:
-            continue
-        next_due_date = local_midnight(today if due_today else anchor_date + timedelta(days=interval))
         items.append(
             {
                 "episode_id": episode.id,
                 "subject_id": episode.subject_id,
                 "location_id": episode.location_id,
                 "current_phase_number": episode.current_phase_number,
-                "treatment_due_today": due_today,
-                "next_due_at": next_due_date,
-                "last_application_at": last_application_at,
-                "due_slot": None,
-                "missed_slots_today": [],
-                "applications_completed_today": 0,
-                "applications_expected_today": phase.applications_per_day,
+                "treatment_due_today": True,
+                "next_due_at": _due_next_due_at(state, deployment_timezone),
+                "last_application_at": (
+                    state.last_application_at.astimezone(timezone.utc)
+                    if state.last_application_at is not None
+                    else None
+                ),
+                "due_slot": state.due_slot.value if state.due_slot is not None else None,
+                "missed_slots_today": [slot.value for slot in state.missed_slots],
+                "applications_completed_today": state.applications_completed_today,
+                "applications_expected_today": state.applications_expected_today,
             }
         )
     return items
